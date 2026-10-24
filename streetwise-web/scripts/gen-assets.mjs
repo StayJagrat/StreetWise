@@ -1,4 +1,4 @@
-// Generates public/mascots/*.svg, public/icons/*.png and public/data/demo-route.json.
+// Generates public/mascots/*.svg and public/icons/*.png.
 // The mascot art is the same SVG source used for the "Mascot" component set in Figma,
 // so the app and the design file stay in sync. Run: npm run assets
 import fs from 'node:fs';
@@ -106,53 +106,4 @@ await sharp(Buffer.from(iconSvg(192, false))).resize(192, 192).png().toFile(out(
 await sharp(Buffer.from(iconSvg(512, false))).resize(512, 512).png().toFile(out('icons/icon-512.png'));
 await sharp(Buffer.from(iconSvg(512, true))).resize(512, 512).png().toFile(out('icons/icon-512-maskable.png'));
 
-// ---------------------------------------------------------------- demo data
-// Geometry: real OpenStreetMap streets, routed with the public OSRM foot profile
-// (Montgomery BART → New Montgomery → Mission → 4th → Howard → 5th → Folsom).
-// Replace with the City pipeline's export (data/spike_score.py) for scored segments.
-let route = [[-122.401991,37.788929],[-122.401948,37.788627],[-122.401524,37.78828],[-122.401043,37.78789],[-122.400821,37.787705],[-122.40061,37.787536],[-122.400509,37.787455],[-122.400586,37.787397],[-122.401273,37.78686],[-122.401617,37.786593],[-122.401735,37.786502],[-122.401959,37.786325],[-122.402041,37.786261],[-122.402152,37.786198],[-122.402286,37.786095],[-122.402494,37.785929],[-122.402548,37.785885],[-122.403368,37.785243],[-122.403467,37.785167],[-122.403518,37.785126],[-122.403837,37.784872],[-122.404207,37.784576],[-122.404257,37.784484],[-122.404169,37.784414],[-122.403854,37.784167],[-122.403794,37.784121],[-122.403734,37.784074],[-122.403406,37.78381],[-122.403359,37.783773],[-122.402824,37.783344],[-122.402708,37.783251],[-122.402755,37.783213],[-122.402802,37.783175],[-122.403299,37.782777],[-122.403771,37.78242],[-122.404111,37.78216],[-122.404261,37.78205],[-122.404285,37.781988],[-122.40445,37.781865],[-122.40485,37.781564],[-122.404942,37.781493],[-122.404869,37.781435],[-122.404638,37.781251],[-122.404557,37.781186],[-122.404423,37.781082],[-122.40394,37.780697],[-122.403677,37.780485],[-122.403647,37.780461],[-122.403537,37.780374],[-122.403503,37.780347],[-122.403431,37.780288],[-122.403354,37.780227],[-122.403317,37.780199],[-122.403093,37.780024],[-122.402907,37.779876],[-122.402854,37.779833]];
-const shortest = [[-122.401991,37.788929],[-122.401948,37.788627],[-122.401524,37.78828],[-122.401043,37.78789],[-122.400821,37.787705],[-122.40061,37.787536],[-122.400509,37.787455],[-122.400431,37.78739],[-122.399996,37.787029],[-122.399518,37.786647],[-122.399084,37.786289],[-122.398984,37.786206],[-122.399053,37.786151],[-122.399323,37.785933],[-122.399444,37.785835],[-122.399884,37.785478],[-122.400391,37.785083],[-122.400585,37.784941],[-122.400677,37.784867],[-122.401105,37.784526],[-122.401599,37.784133],[-122.402034,37.783786],[-122.402195,37.783658],[-122.402447,37.783457],[-122.402608,37.783329],[-122.402708,37.783251],[-122.402802,37.783175],[-122.403299,37.782777],[-122.403771,37.78242],[-122.404111,37.78216],[-122.404261,37.78205],[-122.404285,37.781988],[-122.40445,37.781865],[-122.40485,37.781564],[-122.404942,37.781493],[-122.404869,37.781435],[-122.404638,37.781251],[-122.404423,37.781082],[-122.40394,37.780697],[-122.403677,37.780485],[-122.403537,37.780374],[-122.403431,37.780288],[-122.403317,37.780199],[-122.403093,37.780024],[-122.402907,37.779876],[-122.402854,37.779833]];
-
-const demo = {
-  _note: 'Demo corridor for the Friday 11 PM scenario. Geometry is real OSM streets; scores and stats are from the data spike (Route 1). Shops marked simulated:true are not real place agents.',
-  scenario: { label: 'Friday · 11:04 PM', area: 'Downtown SF box', segmentsScored: 5025 },
-  walker: { id: 'arya', name: 'Arya' },
-  guardian: { name: 'Maya Chen', initials: 'M', channel: 'Live link + verified phone' },
-  start: { name: 'Montgomery BART', lngLat: route[0] },
-  end: { name: 'Home', lngLat: route[route.length - 1] },
-  route,
-  shortest,
-  // Stretches with fewer working lights (bottom quarter of the area, score < 33)
-  dimStretches: [
-    { id: 'howard-4th-5th', name: 'Howard St · 4th → 5th', onRoute: true, meters: 44, score: 31, confidence: 'low',
-      line: [[-122.403771,37.78242],[-122.404111,37.78216],[-122.404261,37.78205]],
-      lampEvidence: '2 streetlight-out reports on this block; 1 lamp on our walk trace not working.',
-      lampSource: 'SF 311 open data · 2025–26',
-      openPlaces: 'Pharmacy on 4th, open till 12 (block is past it)', openSource: 'Apify Google Maps run · 11:00 PM',
-      why: 'Fewer working lamps and no open doors here after 11, so the route only spends 44 m on it.' },
-    { id: 'howard-newmont-3rd', name: 'Howard St · New Montgomery → 3rd', onRoute: false, meters: 115, score: 24, confidence: 'medium',
-      line: [[-122.399884,37.785478],[-122.400391,37.785083],[-122.400585,37.784941],[-122.400677,37.784867],[-122.401105,37.784526]],
-      lampEvidence: '3 streetlight-out reports along this stretch.', lampSource: 'SF 311 open data · 2025–26',
-      openPlaces: 'No open places after 11 PM', openSource: 'OSM hours + Apify',
-      why: 'Long stretch beside closed venues with lamp outages — the shortest path spends 115 m here.' },
-  ],
-  stopAt: [-122.40394, 37.78229],
-  places: [
-    { id: 'cafe-mia', name: 'Café Mia', kind: 'cafe', lngLat: [-122.40322, 37.78541], openUntil: '01:00', safeHaven: true, frontLight: true, simulated: false, address: 'Mission St, between 3rd & 4th' },
-    { id: 'corner-market', name: 'Corner market', kind: 'market', lngLat: [-122.40448, 37.78465], openUntil: '24h', safeHaven: false, simulated: true },
-    { id: 'pharmacy-4th', name: 'Pharmacy', kind: 'pharmacy', lngLat: [-122.40346, 37.78394], openUntil: '00:00', safeHaven: false, simulated: true },
-    { id: 'hotel-lobby', name: 'Hotel lobby', kind: 'hotel', lngLat: [-122.40118, 37.78806], openUntil: 'lobby', safeHaven: true, simulated: true },
-  ],
-  stats: {
-    streetwise: { score: 60, longestEmptyM: 44, minutes: 22.2 },
-    shortest: { score: 49, longestEmptyM: 115, minutes: 20.1 },
-  },
-  darknessDebt: [
-    { street: 'Howard St · New Montgomery → 3rd', minutes: 42 },
-    { street: 'Howard St · 4th → 5th', minutes: 18 },
-    { street: 'Tehama St · 4th → 5th', minutes: 11 },
-  ],
-};
-fs.mkdirSync(out('data'), { recursive: true });
-fs.writeFileSync(out('data/demo-route.json'), JSON.stringify(demo, null, 1));
-console.log('assets written: 20 mascots, 3 icons, demo-route.json');
+console.log('assets written: 20 mascots, 3 icons');

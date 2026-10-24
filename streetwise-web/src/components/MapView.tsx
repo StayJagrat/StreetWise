@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import maplibregl, { type GeoJSONSource, type LngLatBoundsLike, type Map as MLMap, type PaddingOptions } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
+import { Protocol } from 'pmtiles';
 import { buildStyle, UI_COLORS, type Theme } from '../lib/mapStyle';
 import { along, bounds, cumulative, lineLength, offsetPoint, project, sliceFrom, sliceTo } from '../lib/geo';
 import { openLabel } from '../lib/format';
@@ -30,6 +31,13 @@ export interface MapViewProps {
 const fc = (features: GeoJSON.Feature[]): GeoJSON.FeatureCollection => ({ type: 'FeatureCollection', features });
 const ls = (coords: LngLat[], props: Record<string, unknown> = {}): GeoJSON.Feature => ({ type: 'Feature', properties: props, geometry: { type: 'LineString', coordinates: coords } });
 const pt = (c: LngLat, props: Record<string, unknown> = {}): GeoJSON.Feature => ({ type: 'Feature', properties: props, geometry: { type: 'Point', coordinates: c } });
+
+let pmtilesReady = false;
+export function ensurePmtiles() {
+  if (pmtilesReady) return;
+  maplibregl.addProtocol('pmtiles', new Protocol().tile);
+  pmtilesReady = true;
+}
 
 export default function MapView(p: MapViewProps) {
   const el = useRef<HTMLDivElement>(null);
@@ -64,13 +72,14 @@ export default function MapView(p: MapViewProps) {
   // ---------------------------------------------------------------- init
   useEffect(() => {
     if (!el.current) return;
+    ensurePmtiles();
     const b = bounds([p.data.route, p.data.shortest]);
     const m = new maplibregl.Map({
       container: el.current,
       style: buildStyle(p.theme),
       bounds: b as LngLatBoundsLike,
       fitBoundsOptions: { padding: 40 },
-      attributionControl: { compact: true, customAttribution: '© OpenStreetMap · OpenFreeMap' },
+      attributionControl: { compact: true },
       interactive: p.interactive ?? true,
       pitchWithRotate: true,
       dragRotate: true,
@@ -199,7 +208,7 @@ export default function MapView(p: MapViewProps) {
       mk.setLngLat(lngLat);
     };
     put('start', p.data.start.lngLat, `<div class="end-pin"><span style="width:18px;height:18px;display:inline-flex">${ICONS.train}</span>${p.data.start.name}</div>`, 'bottom-left', [-14, -6]);
-    put('end', p.data.end.lngLat, `<div class="end-pin"><span style="width:18px;height:18px;display:inline-flex">${ICONS.home}</span>${p.data.end.name}</div>`, 'top-left', [-14, 6]);
+    put('end', p.data.end.lngLat, `<div class="end-pin"><span style="width:18px;height:18px;display:inline-flex">${ICONS.star}</span>${p.data.end.name}</div>`, 'top-left', [-14, 6]);
     for (const pl of p.places) {
       const closed = pl.openUntil === 'closed';
       const cls = `place-marker${closed ? ' place-marker--closed' : ''}${p.bouncePlace === pl.id ? ' place-marker--bounce' : ''}`;

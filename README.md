@@ -1,22 +1,28 @@
-# Streetwise Â· JP development
+# Streetwise · JP development
 
-This branch starts from `main` commit `519db43` and adds the Supabase persistence foundation to the existing PWA. Development changes belong to **JP**. No automatic GitHub-to-Supabase deployment is connected.
+A voice-first walking companion for San Francisco. Route conditions come from deterministic Python calculations using arrival-time opening hours, lighting evidence and access to help. Scores describe conditions, not the likelihood of personal safety.
 
-While this change was being verified, Arya merged the engine/API work into `main` at `cec4172`. That independent update was reviewed and is covered in the workflow's integration handoff. It is not merged into this Supabase branch; the current JP verification applies to the original PWA plus the new persistence foundation.
+All development in this checkout belongs to **JP**. The current main engine, API and frontend snapshot has been integrated into JP; no changes are pushed to main.
 
-- [Repository-based workflow](docs/WORKFLOW.md): current implementation, priorities, ownership, and completion gates.
-- [Supabase setup and verification](docs/SUPABASE.md): schema, environment, local tests, and cloud setup.
-- [Existing PWA guide](streetwise-web/README.md): screens, message contract, voice hooks, and map assets.
+- [Team handoff](docs/HANDOFF.md)
+- [JP workflow and completion notes](docs/WORKFLOW.md)
+- [Supabase setup](docs/SUPABASE.md)
+- [PWA guide](streetwise-web/README.md)
 
-```bash
+## Run locally
+
+```powershell
+uv venv .venv
+uv pip install --python .venv/Scripts/python.exe -r services/requirements.txt
+.venv/Scripts/python.exe -m uvicorn services.api.main:app --host 127.0.0.1 --port 8000
+# A second terminal:
 cd streetwise-web
 npm ci
-npm test
-npm run relay
-# In a second terminal:
 npm run dev
 ```
 
-Without Supabase environment variables, the relay uses in-memory demo storage. With the server-only credentials configured, it records demo walks and recovers history from Supabase. The relay accepts replay locations only. Real walks need the authenticated gateway described in the workflow.
+The PWA uses port 5173 and proxies its API and WebSocket traffic to port 8000. The cached demonstration works without provider credentials. External integrations show their availability rather than impersonating a connected provider. Demo shops are labelled simulated; reports remain drafts and no emergency calls are automatic.
 
-The cloud development project is [streetwise-jp-dev](https://supabase.com/dashboard/project/myihzchlereyzckkavbn). Supabase's default database branch label `main` is independent of GitHub's `main` branch; this separate development project does not deploy or modify GitHub `main`.
+## Layout
+
+`streetwise-web/` contains the existing React/Vite design. `services/engine/` owns scoring and routing; `services/api/` owns walk sessions and the gateway; `services/agents/` contains the Fetch.ai adapters. `supabase/` stores private operational database migrations. Server credentials belong in ignored environment files only.

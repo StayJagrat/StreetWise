@@ -1,0 +1,224 @@
+.plan-map {
+  position: absolute;
+  inset: 0;
+}
+.plan__top {
+  position: absolute;
+  top: calc(12px + var(--safe-top));
+  left: 16px;
+  right: 16px;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  pointer-events: none;
+}
+.plan__top > * {
+  pointer-events: auto;
+}
+.plan__sheet {
+  gap: 10px;
+  padding-top: 8px;
+  max-height: 72dvh;
+}
+.plan__head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.plan__fields {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.plan__field {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 42px;
+  padding: 0 14px;
+  border-radius: 14px;
+  background: var(--surface-2);
+  border: 1px solid transparent;
+}
+.plan__field.on {
+  border-color: var(--route);
+}
+.plan__dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex: none;
+}
+.plan__dot--from {
+  background: var(--open);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--open) 25%, transparent);
+}
+.plan__dot--to {
+  background: var(--route);
+  border-radius: 3px;
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--route) 25%, transparent);
+}
+.plan__input,
+.plan__value {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  background: transparent;
+  border: 0;
+  padding: 0;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.plan__input:focus {
+  outline: none;
+}
+.plan__input::placeholder {
+  color: var(--text-2);
+  font-weight: 500;
+}
+.plan__swap {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  z-index: 1;
+}
+.plan__results {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+}
+.plan__result {
+  text-align: left;
+  padding: 11px 14px;
+  font-size: 15px;
+  font-weight: 600;
+  background: var(--surface);
+  color: var(--text);
+  border-bottom: 1px solid var(--border);
+}
+.plan__result:last-child {
+  border-bottom: 0;
+}
+.plan__result:active {
+  background: var(--surface-2);
+}
+.plan__result small {
+  display: block;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-2);
+}
+.plan__searching {
+  padding: 8px 14px;
+}
+.plan__when {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.plan__when::-webkit-scrollbar {
+  display: none;
+}
+.plan__chip {
+  flex: none;
+  padding: 7px 13px;
+  border-radius: 20px;
+  background: var(--surface-2);
+  border: 1px solid transparent;
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.plan__chip.on {
+  color: var(--text);
+  border-color: var(--route);
+  background: color-mix(in srgb, var(--route) 18%, var(--surface-2));
+}
+.plan__error {
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--checkin);
+  font-size: 14px;
+}
+.plan__cards {
+  display: flex;
+  gap: 10px;
+}
+.plan__card {
+  flex: 1;
+  text-align: left;
+  padding: 10px 12px;
+  border-radius: 16px;
+  background: var(--surface-2);
+  border: 1.5px solid transparent;
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.plan__card.on {
+  border-color: var(--text-2);
+}
+.plan__card--best.on {
+  border-color: var(--route);
+  background: color-mix(in srgb, var(--route) 14%, var(--surface-2));
+}
+.plan__score {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 32px;
+  line-height: 36px;
+}
+.plan__score small {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-2);
+  margin-left: 2px;
+}
+.plan__meta {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-2);
+  line-height: 18px;
+}
+.plan__why {
+  margin: 0;
+  font-size: 13px;
+  line-height: 18px;
+}
+.plan-pin {
+  width: 18px;
+  height: 18px;
+  border: 3px solid #fff;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.45);
+}
+.plan-pin--from {
+  border-radius: 50%;
+  background: var(--open);
+}
+.plan-pin--to {
+  border-radius: 6px;
+  background: var(--route);
+  width: 20px;
+  height: 20px;
+}

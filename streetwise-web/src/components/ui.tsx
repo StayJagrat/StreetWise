@@ -88,7 +88,7 @@ export function HoldButton({ kind = 'help', children, onConfirm, holdMs = 1500, 
 }
 
 export function StreetSign({ street, instruction, direction }: { street: string; instruction: string; direction: 'left' | 'right' | 'straight' | 'arrive' }) {
-  const icon: IconName = direction === 'left' ? 'turnLeft' : direction === 'right' ? 'turnRight' : direction === 'arrive' ? 'home' : 'straight';
+  const icon: IconName = direction === 'left' ? 'turnLeft' : direction === 'right' ? 'turnRight' : direction === 'arrive' ? 'star' : 'straight';
   return (
     <div className="street-sign" role="status" aria-live="polite">
       <Icon name={icon} size={28} />
