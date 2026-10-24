@@ -18,8 +18,9 @@ It is one React + Vite PWA with five screens that all join the same walk room:
 ```bash
 npm install
 npm run assets        # regenerates mascots, icons and public/data/demo-route.json (already committed)
-npm run relay         # terminal 1: dev relay on :8787 (stand-in for the gateway)
-npm run dev           # terminal 2: app on :5173, proxies /ws to the relay
+cd ../services/api && ../../.venv/bin/uvicorn main:app --port 8000 --reload --reload-dir . --reload-dir ../engine
+# In another terminal:
+cd streetwise-web && npm run dev   # app on :5173, proxies /ws to the API
 ```
 
 PWAs need HTTPS for the mic, location and install. Put one tunnel in front of Vite and everything rides it — the app and the `/ws` room:
@@ -53,13 +54,13 @@ For the demo build: `npm run build && npm run preview` (port 4173, same `/ws` pr
 { "id": "…", "walkId": "demo", "ts": 1761373440000, "from": "engine|walker|guardian|shop|room|gateway", "msg": { "type": "…", … } }
 ```
 
-The gateway only has to:
+The FastAPI gateway (`services/api/main.py`) now:
 
 1. Accept `wss://…/ws?walk=<id>&role=<role>`.
 2. Forward every envelope to everyone else in that walk's room.
-3. Optionally send `{ "kind": "history", "envelopes": [...] }` to a late joiner.
+3. Sends `{ "kind": "history", "envelopes": [...] }` to a late joiner.
 
-`relay/server.mjs` does exactly that in about 60 lines — copy its behavior into FastAPI. Then point the app at it with `VITE_GATEWAY_URL=wss://your-gateway/ws`.
+`relay/server.mjs` remains an optional standalone development relay. For a separately hosted API, set `VITE_GATEWAY_URL=wss://your-gateway/ws`.
 
 Message types the agents produce:
 

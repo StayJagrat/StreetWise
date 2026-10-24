@@ -2,7 +2,7 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 
-// The dev relay (npm run relay) listens on 8787. Proxying it through Vite means
+// The FastAPI gateway listens on 8000. Proxying it through Vite means
 // one HTTPS tunnel (Cloudflare / ngrok) serves both the app and the realtime room,
 // so a judge's phone that scans the QR code reaches both.
 export default defineConfig({
@@ -49,12 +49,12 @@ export default defineConfig({
   server: {
     host: true,
     proxy: {
-      '/ws': { target: 'ws://localhost:8787', ws: true },
+      '/ws': { target: 'ws://127.0.0.1:8000', ws: true },
     },
   },
   preview: {
     proxy: {
-      '/ws': { target: 'ws://localhost:8787', ws: true },
+      '/ws': { target: 'ws://127.0.0.1:8000', ws: true },
     },
   },
 });

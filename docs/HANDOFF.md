@@ -115,3 +115,4 @@ If `.venv`, `.venv-agents` or `.venv-hours` are missing, recreate them from `ser
 ## Log (add a line per finished piece; newest last)
 - 2026-10-24: Trunk is `main`. Local branch `backend-import` holds Abhishek's commit plus our uncommitted backend. Nothing committed or pushed from our side yet.
 - 2026-10-24: Piece 1 prepared on `backend-import`: moved the earlier frontend to `legacy/web`, staged the backend and supporting files, updated the root README and ignores, and confirmed the restarted API returns HTTP 200 in the browser. Commit awaits user approval.
+- 2026-10-24: Piece 2 prepared on `gateway`: FastAPI now relays walk envelopes at `/ws`, replays room history to joiners, and keeps `/ws/{session}`. Vite proxies `/ws` to port 8000. Confirmed forwarding, history, legacy WebSocket, a production frontend build, and linked `/room` and `/walk` browser views. Commit awaits the user.

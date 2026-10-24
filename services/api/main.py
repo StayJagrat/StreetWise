@@ -2,7 +2,7 @@
 
     cd services/api && ../../.venv/bin/uvicorn main:app --reload --port 8000
 """
-import asyncio, os, sys, time, uuid
+import asyncio, json, os, sys, time, uuid
 from collections import defaultdict, deque
 from pathlib import Path
 
@@ -260,6 +260,57 @@ async def ws(sock: WebSocket, session: str):
         while True: await sock.send_json(await q.get())
     except WebSocketDisconnect: pass
     finally: hub.subs[session].discard(q)
+
+
+# Abhishek's PWA uses one room per walk and sends typed envelopes. Keep this
+# separate from the earlier trace stream above until its callers are retired.
+class WalkRoom:
+    def __init__(self):
+        self.clients: set[WebSocket] = set()
+        self.history: deque[dict] = deque(maxlen=400)
+        self.lock = asyncio.Lock()
+
+
+walk_rooms: dict[str, WalkRoom] = {}
+
+
+@app.websocket("/ws")
+async def ws_walk(sock: WebSocket, walk: str = "demo", role: str = "unknown"):
+    del role  # The role is part of the client URL; envelopes carry their sender.
+    room = walk_rooms.setdefault(walk, WalkRoom())
+    await sock.accept()
+    async with room.lock:
+        await sock.send_json({"kind": "history", "envelopes": list(room.history)})
+        room.clients.add(sock)
+    try:
+        while True:
+            try:
+                env = json.loads(await sock.receive_text())
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(env, dict) or env.get("walkId") != walk or not isinstance(env.get("msg"), dict):
+                continue
+            kind = env["msg"].get("type")
+            async with room.lock:
+                if kind == "walk.reset":
+                    room.history = deque((e for e in room.history if e["msg"].get("type") in ("place.update", "guardian.join")), maxlen=400)
+                elif kind == "walk.start":
+                    room.history = deque((e for e in room.history if e["msg"].get("type") in ("agent.log", "walk.plan", "place.update", "guardian.join")), maxlen=400)
+                elif kind == "walk.position":
+                    room.history = deque((e for e in room.history if e["msg"].get("type") != "walk.position"), maxlen=400)
+                room.history.append(env)
+                for peer in list(room.clients):
+                    if peer is sock:
+                        continue
+                    try:
+                        await peer.send_json(env)
+                    except (RuntimeError, WebSocketDisconnect):
+                        room.clients.discard(peer)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        async with room.lock:
+            room.clients.discard(sock)
 
 
 WEB = ROOT / "streetwise-web" / "dist"

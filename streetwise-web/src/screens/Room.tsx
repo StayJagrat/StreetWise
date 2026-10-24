@@ -105,7 +105,7 @@ export default function Room() {
           <LinkBadge status={status} />
         </div>
         <DemoTape />
-        <div className="t-mono" style={{ fontSize: 10 }}>OSM · SF 311 · SFPD (capped at 10%)</div>
+        <div className="t-mono" style={{ fontSize: 10 }}>OSM · SF 311 streetlights · place hours</div>
       </aside>
 
       {/* ---------- map ---------- */}
