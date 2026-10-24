@@ -202,3 +202,9 @@
   margin: 0;
   font-size: 14px;
 }
+.g-tape {
+  position: absolute;
+  top: calc(84px + var(--safe-top));
+  left: 16px;
+  z-index: 3;
+}

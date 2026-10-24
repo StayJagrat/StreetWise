@@ -1,3 +1,4 @@
+import MapBoundary from './MapBoundary';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import maplibregl, { type GeoJSONSource, type LngLatBoundsLike, type Map as MLMap, type PaddingOptions } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
@@ -40,6 +41,10 @@ export function ensurePmtiles() {
 }
 
 export default function MapView(p: MapViewProps) {
+  return <MapBoundary className={p.className}><MapViewInner {...p} /></MapBoundary>;
+}
+
+function MapViewInner(p: MapViewProps) {
   const el = useRef<HTMLDivElement>(null);
   const map = useRef<MLMap | null>(null);
   const [ready, setReady] = useState(false);
@@ -86,6 +91,8 @@ export default function MapView(p: MapViewProps) {
       maxZoom: 19,
     });
     map.current = m;
+    // Tile requests cancelled by camera moves are routine; anything else is worth a warning, never a crash.
+    m.on('error', (e) => { if ((e.error as Error | undefined)?.name !== 'AbortError') console.warn('map:', (e.error as Error | undefined)?.message ?? e); });
     // 'style.load' (not 'load'): our overlays must draw even when the tile server
     // is unreachable — on a bad venue network the route, lamps and places still show.
     m.once('style.load', () => {
@@ -119,7 +126,7 @@ export default function MapView(p: MapViewProps) {
         'circle-opacity': 0.9,
       } });
       m.addLayer({ id: 'dim-label', type: 'symbol', source: 'dims', filter: ['==', ['get', 'showLabel'], true], layout: {
-        'symbol-placement': 'line-center', 'text-field': ['get', 'label'], 'text-font': ['Noto Sans Bold'], 'text-size': 11,
+        'symbol-placement': 'line-center', 'text-field': ['get', 'label'], 'text-font': ['Noto Sans Medium'], 'text-size': 11,
         'text-letter-spacing': 0.08, 'text-offset': [0, -1.4], 'text-keep-upright': true,
       }, paint: { 'text-color': colors.text2, 'text-halo-color': colors.surface, 'text-halo-width': 3 } });
       m.on('click', 'dims-hit', (ev) => {

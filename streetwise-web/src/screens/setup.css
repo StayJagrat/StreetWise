@@ -123,3 +123,8 @@
   border-radius: 8px;
   padding: 4px 8px;
 }
+.setup__input--phone {
+  font-weight: 500;
+  font-size: 14px;
+  margin-top: 6px;
+}

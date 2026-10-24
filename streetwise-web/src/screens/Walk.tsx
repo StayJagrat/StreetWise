@@ -1,29 +1,35 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import MapView from '../components/MapView';
 import { Button, DemoTape, HoldButton, Icon, Initials, LinkBadge, Mascot, Sheet, StreetSign } from '../components/ui';
 import { DemoEngine } from '../lib/engine';
 import { cumulative, lineLength, project, turnsFromSteps } from '../lib/geo';
 import { AGENT_LABEL, meters, timeOf } from '../lib/format';
-import { getRoomStore, loadSettings, mergedPlaces, useDemoData, useWalk, walkIdFromUrl } from '../lib/store';
+import { getRoomStore, loadSettings, mergedPlaces, useWalk, useWalkData, walkIdFromUrl } from '../lib/store';
+import { gpsMode, isLive, walkCreds } from '../lib/api';
+import { GpsReplay } from '../lib/replay';
 import { canListen, isMuted, listen, setMuted, speak, unlockAudio, type ListenerHandle } from '../lib/voice';
 import { keepAwake, vibrate, watchLocation } from '../lib/device';
 import './walk.css';
 
-const engineEnabled = () => new URLSearchParams(location.search).get('engine') !== 'off' && import.meta.env.VITE_ENGINE !== 'off';
+const engineEnabled = () => !isLive();
 
 export default function Walk() {
   const walkId = walkIdFromUrl();
-  const { data, error } = useDemoData();
   const settings = useMemo(loadSettings, []);
-  const { state, send, status, room } = useWalk(walkId, 'walker');
+  const { state, send, status, room } = useWalk(walkId || 'none', 'walker');
+  const { data, error, waiting } = useWalkData(state);
   const engine = useRef<DemoEngine | null>(null);
+  const replay = useRef<GpsReplay | null>(null);
   const listener = useRef<ListenerHandle | null>(null);
   const [muted, setMutedState] = useState(isMuted());
   const [now, setNow] = useState(Date.now());
   const [gpsError, setGpsError] = useState<string | null>(null);
   const nav = useNavigate();
-  const guardianFirst = settings.guardianName.split(' ')[0];
+  const guardianName = state.plan?.guardian ?? settings.guardianName;
+  const guardianFirst = guardianName.split(' ')[0];
+  const timeScale = state.plan?.timeScale ?? settings.timeScale;
+  const ownsWalk = !isLive() || !!walkCreds(walkId);
 
   // demo engine: plays the agents from cached data unless ?engine=off (gateway drives)
   useEffect(() => {
@@ -71,20 +77,32 @@ export default function Walk() {
     return () => window.clearInterval(t);
   }, []);
 
-  // live mode: real GPS fixes go to the gateway
+  // live mode, real GPS: every fix goes to the gateway; the Watcher computes progress, stops and detours from it
+  const activeWalk = state.phase !== 'preview' && state.phase !== 'arrived';
   useEffect(() => {
-    if (engineEnabled() || !data || state.phase === 'preview' || state.phase === 'arrived') return;
+    if (engineEnabled() || gpsMode() !== 'real' || !data || !activeWalk || !ownsWalk) return;
     const line = state.choice === 'usual' ? data.shortest : data.route;
     const cum = cumulative(line);
     const total = lineLength(line);
     return watchLocation(
       (f) => {
+        setGpsError(null);
         const pr = project(line, f.lngLat, cum);
-        send({ type: 'walk.position', lngLat: f.lngLat, heading: f.heading, speed: f.speed, progress: pr.meters / total, replay: false });
+        send({ type: 'walk.position', lngLat: f.lngLat, heading: f.heading, speed: f.speed, progress: pr.meters / total, replay: false, accuracy: f.accuracy });
       },
       (msg) => setGpsError(msg),
     );
-  }, [data, state.phase, state.choice, send]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data?.route, activeWalk, state.choice, send, ownsWalk]);
+
+  // live mode, GPS replay: walk on once the walker answers a check-in; stop at the end of the walk
+  useEffect(() => {
+    if (state.lastReply?.reply === 'fine') replay.current?.resume();
+  }, [state.lastReply]);
+  useEffect(() => {
+    if (state.phase === 'arrived') replay.current?.stop();
+  }, [state.phase]);
+  useEffect(() => () => replay.current?.stop(), []);
 
   // stop listening/awake when the walk ends
   useEffect(() => {
@@ -108,16 +126,21 @@ export default function Walk() {
     }
     if (engine.current) engine.current.start(choice);
     else {
-      send({ type: 'walk.reset' });
-      send({
-        type: 'walk.accept', choice, guardian: settings.guardianName,
-        thresholds: settings.thresholds,
-        origin: { lat: data.start.lngLat[1], lon: data.start.lngLat[0] },
-        dest: { lat: data.end.lngLat[1], lon: data.end.lngLat[0] },
-        day: data.scenario.day ?? 4, minute: data.scenario.departureMinute,
-      });
-      send({ type: 'walk.start', replay: false });
+      const replaying = gpsMode() === 'replay' || !!state.plan?.replay;
+      send({ type: 'walk.accept', choice });
+      send({ type: 'walk.start', replay: replaying });
+      if (replaying) {
+        const t = state.plan?.thresholds ?? settings.thresholds;
+        replay.current?.stop();
+        replay.current = new GpsReplay(send, choice === 'usual' ? data.shortest : data.route, data.stopAt, timeScale, (t.stopSeconds + t.replySeconds + t.escalateSeconds) * 1000 + 15000);
+        replay.current.start();
+      }
     }
+  };
+
+  const endWalk = () => {
+    replay.current?.stop();
+    send({ type: 'walk.end', outcome: 'ended', summary: 'Walk ended by the walker.' });
   };
 
   const reply = (r: 'fine' | 'help') => send({ type: 'checkin.reply', reply: r, via: 'tap' });
@@ -131,7 +154,15 @@ export default function Walk() {
   const total = useMemo(() => (line.length ? lineLength(line) : 0), [line]);
   const turnList = useMemo(() => (line.length && data ? turnsFromSteps(data.routeSteps[state.choice === 'usual' ? 'shortest' : 'streetwise'], lineLength(line)) : []), [line, data, state.choice]);
 
-  if (!data) return <div className="screen" data-theme="night" role={error ? 'alert' : undefined} style={{ padding: 24 }}>{error ?? 'Loading route…'}</div>;
+  if (isLive() && (!walkId || !ownsWalk)) {
+    return (
+      <div className="screen" data-theme="night" style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <p className="t-spoken">{walkId ? 'This walk was started on another phone. Open the guardian link to follow it.' : 'Plan a walk first and Scout will pick the route.'}</p>
+        <Link className="btn btn--primary btn--block" to={walkId ? `/guardian/${walkId}` : '/plan'} style={{ textDecoration: 'none' }}>{walkId ? 'Open guardian view' : 'Plan a walk'}</Link>
+      </div>
+    );
+  }
+  if (!data) return <div className="screen" data-theme="night" role={error ? 'alert' : undefined} style={{ padding: 24 }}>{error ?? (waiting ? 'Scout is planning your route…' : 'Loading route…')}</div>;
 
   const places = mergedPlaces(data, state);
   const progress = state.position?.progress ?? 0;
@@ -196,7 +227,7 @@ export default function Walk() {
       </div>
       {state.replay && phase !== 'preview' && (
         <div className="walk__tape">
-          <DemoTape label={`DEMO · GPS REPLAY · ×${settings.timeScale}`} />
+          <DemoTape label={`DEMO · GPS REPLAY · ×${timeScale}`} />
         </div>
       )}
       {gpsError && <div className="walk__toast">{gpsError}</div>}
@@ -250,7 +281,7 @@ export default function Walk() {
               <div className="t-caption">{Math.max(1, Math.round(etaMin))} min · {meters(remaining)}</div>
             </div>
             <div className="guardian-chip">
-              <Initials text={settings.guardianName[0]} />
+              <Initials text={guardianName[0]} />
               {guardianFirst} {state.guardianJoined ? 'is watching' : 'gets a live link if needed'}
             </div>
           </div>
@@ -275,6 +306,7 @@ export default function Walk() {
             <Button kind="fine" icon="check" onClick={() => reply('fine')}>I'm fine</Button>
             <HoldButton onConfirm={() => reply('help')}>Hold for help</HoldButton>
           </div>
+          {isLive() && <button type="button" className="walk__end t-caption" onClick={endWalk}>End walk · stop sharing location</button>}
         </Sheet>
       )}
 
@@ -318,7 +350,7 @@ export default function Walk() {
           <p className="t-caption" style={{ fontSize: 15, lineHeight: '21px' }}>{state.summary}</p>
           <div className="btn-row">
             <Button kind="secondary" onClick={() => nav(`/room?walk=${walkId}`)}>Control room</Button>
-            <Button kind="primary" onClick={() => { send({ type: 'walk.reset' }); engine.current?.plan(); }}>New walk</Button>
+            <Button kind="primary" onClick={() => { if (isLive()) { nav('/plan'); return; } send({ type: 'walk.reset' }); engine.current?.plan(); }}>New walk</Button>
           </div>
         </Sheet>
       )}

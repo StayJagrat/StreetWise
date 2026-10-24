@@ -3,6 +3,8 @@ import { useParams } from 'react-router-dom';
 import { Mascot, Toggle } from '../components/ui';
 import { clock } from '../lib/format';
 import { loadSettings, mergedPlaces, useDemoData, useWalk, walkIdFromUrl } from '../lib/store';
+import { declareHours, isLive, placeInfo, type PlaceInfo } from '../lib/api';
+import type { Place } from '../lib/types';
 import './shop.css';
 
 // The demo shopkeeper updates listed hours, a place to pause, and front light.
@@ -11,14 +13,29 @@ const TIMES = ['22:00', '22:30', '23:00', '23:30', '00:00', '00:30', '01:00', '0
 
 export default function Shop() {
   const { place: routePlace } = useParams();
-  const walkId = walkIdFromUrl();
-  const { data, error } = useDemoData();
+  const live = isLive();
+  const walkId = walkIdFromUrl() || 'demo';
+  const { data, error: demoError } = useDemoData(!live);
   const placeId = routePlace ?? data?.whatIf?.placeId ?? data?.places[0]?.id ?? '';
   const settings = useMemo(loadSettings, []);
-  const { state, send, status } = useWalk(walkId, 'shop');
+  const { state, send, status } = useWalk(live ? 'demo' : walkId, 'shop');
   const [toast, setToast] = useState<number | null>(null);
+  const [info, setInfo] = useState<PlaceInfo | null>(null);
+  const [liveError, setLiveError] = useState<string | null>(null);
+  const [notified, setNotified] = useState(0);
 
-  const place = data ? mergedPlaces(data, state).find((p) => p.id === placeId) : undefined;
+  // live: the shop page talks to the city, not to one walk
+  useEffect(() => {
+    if (!live || !placeId) return;
+    placeInfo(placeId).then(setInfo, (e: Error) => setLiveError(e.message));
+  }, [live, placeId]);
+  const livePlace: Place | undefined = info ? {
+    id: info.id, name: info.name, kind: info.cat === 'pharmacy' ? 'pharmacy' : 'cafe', lngLat: info.lngLat, simulated: false,
+    openUntil: info.declaration?.openUntil ?? 'closed', safeHaven: info.declaration?.safeHaven ?? false, frontLight: info.declaration?.frontLight ?? true,
+    address: info.listedHours ? `Listed hours: ${info.listedHours}` : 'No listed hours on record',
+  } : undefined;
+  const place = live ? livePlace : data ? mergedPlaces(data, state).find((p) => p.id === placeId) : undefined;
+  const error = live ? liveError : demoError;
   const [open, setOpen] = useState(true);
   const [until, setUntil] = useState('01:00');
   const [haven, setHaven] = useState(true);
@@ -35,7 +52,12 @@ export default function Shop() {
 
   const publish = (next: { open?: boolean; until?: string; haven?: boolean; light?: boolean }) => {
     const o = next.open ?? open, u = next.until ?? until, h = next.haven ?? haven, l = next.light ?? light;
-    send({ type: 'place.update', place: { id: placeId, openUntil: o ? u : 'closed', safeHaven: o && h, frontLight: l } });
+    const decl = { openUntil: o ? u : 'closed', safeHaven: o && h, frontLight: l };
+    if (live) {
+      declareHours(placeId, decl).then((r) => { setNotified(r.walksNotified); if (o) setToast(Date.now()); }, (e: Error) => setLiveError(e.message));
+      return;
+    }
+    send({ type: 'place.update', place: { id: placeId, ...decl } });
     if (o) setToast(Date.now());
   };
 
@@ -45,11 +67,12 @@ export default function Shop() {
     return () => window.clearTimeout(t);
   }, [toast]);
 
-  if (!data) return <div className="screen" data-theme="day" role={error ? 'alert' : undefined} style={{ padding: 24 }}>{error ?? 'Loading route…'}</div>;
-  if (!place) return <div className="screen" data-theme="day" style={{ padding: 24 }}>Unknown place “{placeId}”.</div>;
+  if (live && !placeId) return <div className="screen" data-theme="day" style={{ padding: 24 }}>Open your shop's own link (/shop/&lt;place id&gt;).</div>;
+  if (!live && !data) return <div className="screen" data-theme="day" role={error ? 'alert' : undefined} style={{ padding: 24 }}>{error ?? 'Loading route…'}</div>;
+  if (!place) return <div className="screen" data-theme="day" role={error ? 'alert' : undefined} style={{ padding: 24 }}>{error ?? (live ? 'Loading your shop…' : `Unknown place “${placeId}”.`)}</div>;
 
   const idx = Math.max(0, TIMES.indexOf(until));
-  const walking = state.phase === 'walking' || state.phase === 'checkin' || state.phase === 'escalated';
+  const walking = live ? notified > 0 : state.phase === 'walking' || state.phase === 'checkin' || state.phase === 'escalated';
 
   return (
     <div className="screen screen--scroll shop" data-theme="day">
@@ -61,7 +84,7 @@ export default function Shop() {
             <div className="t-caption">{place.address ?? 'Downtown SF'}</div>
           </div>
           {place.simulated ? <span className="tag-sim">Simulated</span> : (
-            <span className={`agent-pill agent-pill--${status}`}><span className="dot" /> Place agent live</span>
+            <span className={`agent-pill agent-pill--${live ? (info ? "online" : "connecting") : status}`}><span className="dot" /> Place agent live</span>
           )}
         </div>
 
@@ -105,7 +128,7 @@ export default function Shop() {
             <Mascot agent="scout" state="done" size={48} />
             <div>
               <div className="t-headline" style={{ fontSize: 15 }}>Your hours update is visible to nearby walkers.</div>
-              <div className="shop__toast-sub">{walking ? `Scout kept ${settings.walkerName}'s walk past your door · just now` : 'Scout will offer it to the next walker · just now'}</div>
+              <div className="shop__toast-sub">{live ? (notified ? `Scout told ${notified} walk${notified === 1 ? '' : 's'} passing your door · just now` : 'Scout will offer it to the next walker · just now') : walking ? `Scout kept ${settings.walkerName}'s walk past your door · just now` : 'Scout will offer it to the next walker · just now'}</div>
             </div>
           </div>
         )}

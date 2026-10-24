@@ -11,8 +11,9 @@ import requests
 from fastapi import APIRouter, Query
 from fastapi.concurrency import run_in_threadpool
 
+from .settings import env
+
 router = APIRouter()
-ROOT = Path(__file__).resolve().parents[2]
 MAPILLARY_IMAGES = "https://graph.mapillary.com/images"
 CLAUDE_MESSAGES = "https://api.anthropic.com/v1/messages"
 MAX_AGE = timedelta(days=3 * 365)
@@ -20,19 +21,7 @@ MAX_DISTANCE_M = 80
 
 
 def _key(name: str) -> str | None:
-    """Read one key without loading the whole .env into the shell or logging it."""
-    if os.environ.get(name):
-        return os.environ[name]
-    path = ROOT / ".env"
-    if not path.exists():
-        return None
-    for line in path.read_text().splitlines():
-        if line.lstrip().startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        if key.strip() == name:
-            return value.strip().strip('"\'') or None
-    return None
+    return env(name) or None
 
 
 def _distance_m(a_lat: float, a_lon: float, b_lat: float, b_lon: float) -> float:

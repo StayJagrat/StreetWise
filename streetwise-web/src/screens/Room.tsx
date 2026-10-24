@@ -1,11 +1,14 @@
+import { Logo } from '../components/Logo';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import QRCode from 'qrcode';
 import MapView from '../components/MapView';
 import { AgentRow, DemoTape, Icon, LinkBadge, Mascot } from '../components/ui';
 import { DemoEngine } from '../lib/engine';
-import { along, cumulative, lineLength, project } from '../lib/geo';
 import { timeOf } from '../lib/format';
-import { isGatewayMode, loadSettings, mergedPlaces, useDemoData, useWalk, walkIdFromUrl, type LogEntry } from '../lib/store';
+import { getRoomStore, isGatewayMode, loadSettings, mergedPlaces, useWalk, useWalkData, walkIdFromUrl, type LogEntry } from '../lib/store';
+import { createWalk, gpsMode, listWalks, walkCreds } from '../lib/api';
+import { GpsReplay } from '../lib/replay';
+import type { DemoData } from '../lib/types';
 import type { MascotState } from '../lib/types';
 import './room.css';
 
@@ -20,10 +23,24 @@ interface BlockVision {
 }
 
 export default function Room() {
-  const walkId = walkIdFromUrl();
-  const { data, error } = useDemoData();
+  const [walkId, setWalkId] = useState(() => new URLSearchParams(location.search).get('walk') || (isGatewayMode() ? '' : walkIdFromUrl()));
   const settings = useMemo(loadSettings, []);
-  const { state, send, status, room } = useWalk(walkId, 'room');
+  const { state, send, status, room } = useWalk(walkId || 'none', 'room');
+  const { data, error } = useWalkData(state);
+  const [starting, setStarting] = useState<string | null>(null);
+  const liveReplay = useRef<GpsReplay | null>(null);
+
+  // live: follow the walk in the URL, else the newest active walk
+  useEffect(() => {
+    if (!isGatewayMode() || walkId) return;
+    listWalks(true).then((ws) => { if (ws[0]) follow(ws[0].id); }, () => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const follow = (id: string) => {
+    const q = new URLSearchParams(location.search); q.set('walk', id);
+    history.replaceState(null, '', `${location.pathname}?${q}`);
+    setWalkId(id);
+  };
   const [qr, setQr] = useState('');
   const [stretch, setStretch] = useState<string | null>(null);
   const [vision, setVision] = useState<BlockVision | null>(null);
@@ -33,12 +50,14 @@ export default function Room() {
   const replayTimer = useRef<number | null>(null);
   const feedEnd = useRef<HTMLDivElement>(null);
   const guardianParams = new URLSearchParams();
-  if (isGatewayMode()) guardianParams.set('engine', 'off');
-  if (settings.destination) {
-    guardianParams.set('destination', `${settings.destination.lngLat[1]},${settings.destination.lngLat[0]}`);
-    guardianParams.set('destinationName', settings.destination.name);
+  if (!isGatewayMode()) {
+    guardianParams.set('agents', 'demo');
+    if (settings.destination) {
+      guardianParams.set('destination', `${settings.destination.lngLat[1]},${settings.destination.lngLat[0]}`);
+      guardianParams.set('destinationName', settings.destination.name);
+    }
   }
-  const guardianUrl = `${location.origin}/guardian/${walkId}${guardianParams.size ? `?${guardianParams}` : ''}`;
+  const guardianUrl = walkCreds(walkId)?.guardianUrl ?? `${location.origin}/guardian/${walkId}${guardianParams.size ? `?${guardianParams}` : ''}`;
 
   useEffect(() => {
     QRCode.toDataURL(guardianUrl, { margin: 1, width: 360, color: { dark: '#10141C', light: '#ECE7DC' } }).then(setQr).catch(() => setQr(''));
@@ -49,6 +68,7 @@ export default function Room() {
       window.clearInterval(t);
       if (replayTimer.current !== null) window.clearInterval(replayTimer.current);
       engine.current?.dispose();
+      liveReplay.current?.stop();
     };
   }, []);
   useEffect(() => {
@@ -71,7 +91,46 @@ export default function Room() {
     return () => controller.abort();
   }, [data, stretch]);
 
-  if (!data) return <div className="screen" data-theme="night" role={error ? 'alert' : undefined} style={{ padding: 24 }}>{error ?? 'Loading route…'}</div>;
+  // live: a real walk on the stage corridor, positions replayed (badged) so it runs indoors; the agents are the real ones
+  async function startLiveDemo() {
+    setStarting('Asking Scout for the stage route…');
+    try {
+      const corridor = (await fetch('/data/demo-route.json').then((r) => r.json())) as DemoData;
+      const w = await createWalk({
+        from: corridor.start, to: corridor.end, when: { day: corridor.scenario.day ?? 4, minute: corridor.scenario.departureMinute }, choice: 'streetwise',
+        walker: settings.walkerName, guardian: settings.guardianName, guardianPhone: settings.guardianPhone, thresholds: settings.thresholds, replay: true, timeScale: settings.timeScale,
+      });
+      follow(w.walkId);
+      const walker = getRoomStore(w.walkId, 'walker');
+      const t0 = Date.now();
+      while (!walker.state.plan?.data && Date.now() - t0 < 30000) await new Promise((r) => setTimeout(r, 200));
+      const planned = walker.state.plan?.data;
+      if (!planned) throw new Error('Scout did not answer in time.');
+      walker.room.send({ type: 'walk.accept', choice: 'streetwise' });
+      walker.room.send({ type: 'walk.start', replay: true });
+      const t = walker.state.plan!.thresholds;
+      liveReplay.current?.stop();
+      liveReplay.current = new GpsReplay((m) => walker.room.send(m), planned.route, planned.stopAt, settings.timeScale, (t.stopSeconds + t.replySeconds + t.escalateSeconds) * 1000 + 15000);
+      const unsub = walker.room.subscribe((e) => {
+        if (e.msg.type === 'checkin.reply' && e.msg.reply === 'fine') liveReplay.current?.resume();
+        if (e.msg.type === 'walk.end') { liveReplay.current?.stop(); unsub(); }
+      });
+      liveReplay.current.start();
+      setStarting(null);
+    } catch (e) {
+      setStarting(e instanceof Error ? e.message : 'Could not start the demo walk.');
+    }
+  }
+
+  if (!data) {
+    return (
+      <div className="screen" data-theme="night" role={error ? 'alert' : undefined} style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 520 }}>
+        <Logo size={24} />
+        <p className="t-spoken">{error ?? starting ?? (walkId ? 'Waiting for Scout\'s plan…' : 'No active walk yet. Start one on a phone from /plan, or run the stage walk here.')}</p>
+        {isGatewayMode() && !walkId && <button type="button" className="room__action" onClick={() => void startLiveDemo()}><Icon name="play" size={16} /> Start demo walk here</button>}
+      </div>
+    );
+  }
 
   const walkRunning = state.phase === 'walking' || state.phase === 'checkin' || state.phase === 'escalated';
   // The room only runs the demo itself if no walker phone has planned/started a walk.
@@ -80,36 +139,7 @@ export default function Room() {
     return engine.current;
   };
   const startDemo = () => {
-    if (isGatewayMode()) {
-      const scale = 30;
-      send({ type: 'walk.reset' });
-      send({ type: 'walk.accept', choice: 'streetwise', guardian: settings.guardianName,
-        thresholds: { stopSeconds: settings.thresholds.stopSeconds / scale, replySeconds: settings.thresholds.replySeconds / scale, escalateSeconds: settings.thresholds.escalateSeconds / scale },
-        origin: { lat: data.start.lngLat[1], lon: data.start.lngLat[0] },
-        dest: { lat: data.end.lngLat[1], lon: data.end.lngLat[0] }, day: 4, minute: data.scenario.departureMinute });
-      send({ type: 'walk.start', replay: true });
-      const line = data.route;
-      const distances = cumulative(line);
-      const total = lineLength(line);
-      const duration = Math.max(15_000, total / (1.35 * scale) * 1000);
-      const started = Date.now();
-      const gap = data.dimStretches.find((s) => s.onRoute);
-      const gapMid = gap?.line[Math.floor((gap?.line.length ?? 1) / 2)];
-      const stopAt = gapMid ? project(line, gapMid, distances).meters / total : 0.4;
-      let stoppedAt: number | null = null;
-      const tick = window.setInterval(() => {
-        const elapsed = Date.now() - started;
-        let progress = Math.min(1, elapsed / duration);
-        if (gap && progress >= stopAt && stoppedAt === null) { stoppedAt = Date.now(); progress = stopAt; }
-        const stopped = stoppedAt !== null && Date.now() - stoppedAt < 5_000;
-        if (stoppedAt !== null) progress = stopped ? stopAt : Math.min(1, (elapsed - 5_000) / duration);
-        const point = stopped && gap ? gap.line[Math.floor(gap.line.length / 2)] : along(line, total * progress, distances).lngLat;
-        send({ type: 'walk.position', lngLat: point, heading: 0, speed: stopped ? 0 : 1.35 * scale, progress, replay: true });
-        if (progress >= 1) { window.clearInterval(tick); replayTimer.current = null; send({ type: 'walk.end', outcome: 'arrived', summary: 'Arrived at the selected destination.' }); }
-      }, 500);
-      replayTimer.current = tick;
-      return;
-    }
+    if (isGatewayMode()) { void startLiveDemo(); return; }
     const e = ensureEngine();
     const fresh = state.phase !== 'preview' || !state.plan;
     if (state.phase !== 'preview') send({ type: 'walk.reset' });
@@ -134,7 +164,7 @@ export default function Room() {
       {/* ---------- sidebar ---------- */}
       <aside className="room__side">
         <div>
-          <div className="wordmark" style={{ fontSize: 24 }}>streetwise</div>
+          <Logo size={24} />
           <div className="t-mono">control room</div>
         </div>
         <nav className="room__nav">
@@ -152,19 +182,19 @@ export default function Room() {
         </div>
         <div style={{ flex: 1 }} />
         <button type="button" className="room__action" onClick={startDemo} disabled={walkRunning}>
-          <Icon name="play" size={16} /> {walkRunning ? 'Walk in progress' : 'Start demo walk here'}
+          <Icon name="play" size={16} /> {starting ?? (walkRunning ? 'Walk in progress' : 'Start demo walk here')}
         </button>
         <button type="button" className="room__action" onClick={runAudit}>
           <Icon name="moon" size={16} /> Run overnight audit
         </button>
         <div className="room__det card">
           <div>
-            <div className="t-headline" style={{ fontSize: 13 }}>Deterministic mode</div>
+            <div className="t-headline" style={{ fontSize: 13 }}>{isGatewayMode() ? 'Live agents' : 'Deterministic mode'}</div>
           <div className="t-caption" style={{ fontSize: 11 }}>conditions, not a safety rating · cached route and offline map</div>
           </div>
           <LinkBadge status={status} />
         </div>
-          <DemoTape label={isGatewayMode() ? (walkRunning ? state.replay ? 'DEMO · ×30 REPLAY' : 'LIVE · WALKER GPS' : 'GATEWAY · LIVE GPS') : 'DEMO · GPS REPLAY'} />
+          <DemoTape label={isGatewayMode() ? (walkRunning ? state.replay ? `DEMO · GPS REPLAY · ×${state.plan?.timeScale ?? settings.timeScale} · LIVE AGENTS` : 'LIVE · WALKER GPS' : `LIVE AGENTS · GPS ${gpsMode() === 'replay' ? 'REPLAY' : 'REAL'}`) : 'DEMO · GPS REPLAY'} />
         <div className="t-mono" style={{ fontSize: 10 }}>OSM · SF 311 · missing hours count closed</div>
       </aside>
 

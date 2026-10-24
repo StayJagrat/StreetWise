@@ -1,3 +1,4 @@
+import { Logo } from '../components/Logo';
 import { Link } from 'react-router-dom';
 import { Mascot } from '../components/ui';
 import { walkIdFromUrl } from '../lib/store';
@@ -17,7 +18,7 @@ export default function Home() {
   return (
     <div className="screen screen--scroll" data-theme="night">
       <main style={{ maxWidth: 520, margin: '0 auto', padding: 'calc(40px + var(--safe-top)) 20px 40px', display: 'flex', flexDirection: 'column', gap: 14 }}>
-        <div className="wordmark" style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: 34 }}>streetwise</div>
+        <h1 style={{ margin: 0 }}><Logo size={34} /></h1>
         <p className="muted" style={{ margin: '0 0 8px' }}>A walking companion for the route ahead. Walk id <code>{w}</code> — every screen below joins the same room.</p>
         {links.map(([to, title, sub, a]) => (
           <Link key={to} to={to} className="card" style={{ display: 'flex', gap: 14, alignItems: 'center', padding: 14, textDecoration: 'none', color: 'var(--text)' }}>

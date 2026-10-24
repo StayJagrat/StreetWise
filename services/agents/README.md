@@ -33,6 +33,10 @@ The primary workflow runs entirely inside an ASI:One chat with **`streetwise-sco
 
 Addresses are derived from the seeds (`agent1q...`), so they only exist once you set seeds. `python print_addresses.py --md` prints this table with real addresses; paste it back here and into your submission. **Keep seeds stable**: changing one changes the address and breaks the Agentverse registration. The shop agents are simulated and labelled so in their README and in scout's replies; their ids are real engine place ids from `demo_places.json` (regenerate with `python discover_places.py`).
 
+## Live walks (the PWA)
+
+The same five core agents also run real walks for the PWA. Their logic is `streetwise_agents/` (shared with the gateway's in-process runtime). `live_bureau.py` runs them in one Bureau with a second protocol, `streetwise-walk`: room envelopes from the gateway go to the agent that owns them, and Watcher → Rescuer / Reporter / Scout hand-offs are uAgents messages checked against the sender's address. Set `AGENT_RUNTIME=uagents` and `BRIDGE_SECRET` in the repo `.env`, start `live_bureau.py` instead of `run_all.py` (it also serves the chat protocol and the place agents), then restart the gateway. See `docs/BACKEND.md`.
+
 ## Setup
 
 Python **3.12** is required (uAgents does not support 3.14).

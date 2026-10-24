@@ -1,3 +1,4 @@
+import MapBoundary from './MapBoundary';
 import { useEffect, useRef } from 'react';
 import maplibregl, { type LngLatBoundsLike, type Map as MLMap } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
@@ -27,6 +28,10 @@ function pin(kind: 'from' | 'to') {
 
 /** Interactive city map for choosing a start and a destination. Tap anywhere in San Francisco to drop the active pin. */
 export default function PickerMap(p: Props) {
+  return <MapBoundary className="plan-map"><PickerMapInner {...p} /></MapBoundary>;
+}
+
+function PickerMapInner(p: Props) {
   const el = useRef<HTMLDivElement>(null);
   const map = useRef<MLMap | null>(null);
   const ready = useRef(false);

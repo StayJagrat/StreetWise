@@ -180,3 +180,11 @@
   text-align: center;
   margin: 0;
 }
+
+.walk__end {
+  align-self: center;
+  color: var(--text-2);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  padding: 4px 8px;
+}

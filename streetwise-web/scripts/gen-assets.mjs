@@ -101,9 +101,20 @@ for (const a of Object.keys(A)) for (const s of ['idle', 'talking', 'thinking', 
 
 // ---------------------------------------------------------------- icons
 fs.mkdirSync(out('icons'), { recursive: true });
-const iconSvg = (size, pad) => `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 120 120"><rect width="120" height="120" rx="${pad ? 0 : 26}" fill="#10141C"/><g transform="translate(${pad ? 18 : 10} ${pad ? 18 : 10}) scale(${pad ? 0.7 : 0.8333})">${svgFor('scout', 'idle').replace(/^<svg[^>]*>/, '').replace('</svg>', '')}</g></svg>`;
+// The app icon from the "Streetwise Logo" canvas: full-bleed sign green, white keyline,
+// the S route, three lamps and the walker's puck. Maskable drops the keyline and shrinks
+// the mark into the safe zone; the favicon keeps only the S and the dot.
+const SIGN = '#1F5C46', ROUTE = '#6B83FF';
+const S = 'M84 33 H47 Q38 33 38 42 V51 Q38 60 47 60 H73 Q82 60 82 69 V78 Q82 87 73 87 H40';
+const markFull = `<circle cx="62" cy="22.5" r="2.6" fill="#ECE7DC"/><circle cx="27.5" cy="47" r="2.6" fill="#ECE7DC"/><circle cx="92.5" cy="74" r="2.6" fill="#ECE7DC"/>
+  <path d="${S}" fill="none" stroke="#FFFFFF" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M38 87 L22 79.5 Q19 87 22 94.5 Z" fill="${ROUTE}" fill-opacity="0.5"/>
+  <circle cx="86" cy="33" r="7" fill="${SIGN}" stroke="#FFFFFF" stroke-width="4"/><circle cx="38" cy="87" r="9.5" fill="${ROUTE}" stroke="#FFFFFF" stroke-width="4"/>`;
+const iconSvg = (size, maskable) => `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 120 120"><rect width="120" height="120" rx="${maskable ? 0 : 26}" fill="${SIGN}"/>${maskable ? '' : '<rect x="9" y="9" width="102" height="102" rx="24" fill="none" stroke="#FFFFFF" stroke-width="3.2"/>'}<g transform="translate(60 60) scale(${maskable ? 0.82 : 1.1}) translate(-60 -60)">${markFull}</g></svg>`;
 await sharp(Buffer.from(iconSvg(192, false))).resize(192, 192).png().toFile(out('icons/icon-192.png'));
 await sharp(Buffer.from(iconSvg(512, false))).resize(512, 512).png().toFile(out('icons/icon-512.png'));
 await sharp(Buffer.from(iconSvg(512, true))).resize(512, 512).png().toFile(out('icons/icon-512-maskable.png'));
+await sharp(Buffer.from(iconSvg(180, true))).resize(180, 180).png().toFile(out('icons/apple-touch-icon.png'));
+fs.writeFileSync(out('icons/favicon.svg'), `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120"><rect width="120" height="120" rx="26" fill="${SIGN}"/><g transform="translate(60 60) scale(1.22) translate(-60 -60)"><path d="${S}" fill="none" stroke="#FFFFFF" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/><circle cx="38" cy="87" r="12" fill="${ROUTE}"/></g></svg>\n`);
 
 console.log('assets written: 20 mascots, 3 icons');

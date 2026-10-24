@@ -1,4 +1,5 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
+import { isLive, lastWalkId } from './api';
 import { Room, type LinkStatus, type Role } from './transport';
 import type { AgentName, DemoData, Envelope, LngLat, Msg, Place, Thresholds } from './types';
 
@@ -173,7 +174,7 @@ export function primeDemoData(settings: Settings, data: DemoData) {
 }
 export function loadDemoData(): Promise<DemoData> {
   const query = new URLSearchParams(location.search);
-  const live = import.meta.env.VITE_ENGINE === 'off' || query.get('engine') === 'off';
+  const live = isLive();
   const settings = loadSettings();
   const destinationParam = query.get('destination');
   const requestedDestination = destinationParam ? (() => {
@@ -209,9 +210,10 @@ export function loadDemoData(): Promise<DemoData> {
   promise.catch(() => { if (dataPromises.get(key) === promise) dataPromises.delete(key); });
   return promise;
 }
-export function useDemoData(): { data: DemoData | null; error: string | null } {
+export function useDemoData(enabled = true): { data: DemoData | null; error: string | null } {
   const [result, setResult] = useState<{ data: DemoData | null; error: string | null }>({ data: null, error: null });
   useEffect(() => {
+    if (!enabled) return;
     let alive = true;
     loadDemoData().then(
       (data) => alive && setResult({ data, error: null }),
@@ -220,8 +222,18 @@ export function useDemoData(): { data: DemoData | null; error: string | null } {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [enabled]);
   return result;
+}
+
+/** The route every screen draws. Live: whatever Scout last planned for this walk (same on every device). Demo: cached data. */
+export function useWalkData(state: WalkState): { data: DemoData | null; error: string | null; waiting: boolean } {
+  const live = isLive();
+  const demo = useDemoData(!live);
+  if (!live) return { ...demo, waiting: false };
+  const data = state.plan?.data ?? null;
+  const error = !data && state.phase === 'arrived' ? state.summary ?? 'This walk has ended.' : null;
+  return { data, error, waiting: !data && !error };
 }
 
 export function mergedPlaces(data: DemoData, s: WalkState): Place[] {
@@ -231,6 +243,7 @@ export function mergedPlaces(data: DemoData, s: WalkState): Place[] {
 // ---------------------------------------------------------------- settings
 export interface Settings {
   guardianName: string;
+  guardianPhone?: string;
   thresholds: Thresholds;
   timeScale: number; // demo replay speed (1 = real time)
   walkerName: string;
@@ -262,5 +275,6 @@ export function saveSettings(s: Settings) {
   dataPromises.clear();
 }
 
-export const isGatewayMode = () => import.meta.env.VITE_ENGINE === 'off' || new URLSearchParams(location.search).get('engine') === 'off';
-export const walkIdFromUrl = (fallback?: string) => new URLSearchParams(location.search).get('walk') || fallback || (isGatewayMode() ? 'live-demo' : 'demo');
+/** @deprecated use isLive() from ./api */
+export const isGatewayMode = isLive;
+export const walkIdFromUrl = (fallback?: string) => new URLSearchParams(location.search).get('walk') || fallback || (isLive() ? lastWalkId() ?? '' : 'demo');

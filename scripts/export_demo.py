@@ -10,9 +10,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "services" / "engine"))
-sys.path.insert(0, str(ROOT / "services" / "api"))
+sys.path.insert(0, str(ROOT / "services" / "agents"))
 
-from demo_data import build_demo_data  # noqa: E402
+from streetwise_agents.plan_data import build_demo_data  # noqa: E402
 from streetwise_engine.engine import Engine  # noqa: E402
 
 OUT = ROOT / "streetwise-web" / "public" / "data" / "demo-route.json"
