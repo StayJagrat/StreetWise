@@ -1,0 +1,309 @@
+import { along, cumulative, lineLength, project, turns, type Turn } from './geo';
+import { AGENT_LABEL, clock, openSpoken } from './format';
+import type { Room } from './transport';
+import type { AgentName, DemoData, Envelope, LngLat, Msg, Place } from './types';
+import type { Settings } from './store';
+
+// Deterministic demo engine: plays the five agents from cached data when the
+// gateway isn't driving the walk (Demo Mode / Deterministic mode in the build doc).
+// It speaks the same message types the real agents send, so every screen behaves
+// identically in both modes. It replays the route as GPS (badged "Demo · GPS replay")
+// and injects one stop on the dim stretch of Howard St.
+
+const WALK_MS = 1.35; // walking speed, m/s
+const TICK = 500;
+
+export const STREETS: Record<'streetwise' | 'usual', string[]> = {
+  streetwise: ['NEW MONTGOMERY ST', 'MISSION ST', '4TH ST', 'HOWARD ST', '5TH ST'],
+  usual: ['NEW MONTGOMERY ST', 'HOWARD ST', '5TH ST'],
+};
+
+export class DemoEngine {
+  private room: Room;
+  private data: DemoData;
+  private settings: Settings;
+  private unsub: () => void;
+  private timer?: number;
+  private timeouts: number[] = [];
+  private line: LngLat[] = [];
+  private cum: number[] = [];
+  private total = 0;
+  private progress = 0;
+  private turnsList: Turn[] = [];
+  private said = new Set<string>();
+  private stopAt = Infinity;
+  private state: 'idle' | 'walking' | 'stopped' | 'asking' | 'escalated' | 'done' = 'idle';
+  private places: Place[];
+  private cafeBoost = 0;
+  private mine = new Set<string>();
+  // If another engine (another tab/device) plans or starts the walk, this one stands down.
+  private passive = false;
+  running = false;
+
+  constructor(room: Room, data: DemoData, settings: Settings) {
+    this.room = room;
+    this.data = data;
+    this.settings = settings;
+    this.places = data.places.map((p) => ({ ...p }));
+    this.unsub = room.subscribe((e) => this.onMessage(e));
+  }
+
+  private sending = false;
+  private send(m: Msg) {
+    // Room.send delivers to local listeners synchronously, so flag our own echo.
+    this.sending = true;
+    try {
+      const env = this.room.send(m, 'engine');
+      this.mine.add(env.id);
+      if (this.mine.size > 2000) this.mine.clear();
+    } finally {
+      this.sending = false;
+    }
+  }
+  private log(agent: AgentName, text: string, reason: string, to?: string, at?: number) {
+    this.send({ type: 'agent.log', agent, text, reason, to, at });
+  }
+  private say(agent: AgentName, text: string) {
+    this.send({ type: 'voice.say', agent, text });
+  }
+  private later(ms: number, f: () => void) {
+    this.timeouts.push(window.setTimeout(f, ms));
+  }
+  private scaled(sec: number) {
+    return (sec * 1000) / Math.max(1, this.settings.timeScale);
+  }
+
+  /** Scout's offer before leaving. Called when the walker opens /walk. */
+  plan() {
+    this.stopTimers();
+    this.state = 'idle';
+    this.running = false;
+    this.passive = false;
+    const d = this.data;
+    const overnight = new Date();
+    overnight.setHours(2, 0, 4, 0);
+    this.log('auditor', `Re-scored ${d.scenario.segmentsScored.toLocaleString()} street segments overnight. 14 changed since yesterday.`, 'New SF 311 streetlight reports on Howard St.', 'Scout', overnight.getTime());
+    this.log('scout', 'Who is open near Mission & 4th after 11 PM?', 'Checking before offering a route.', 'Place agents');
+    const open = this.places.filter((p) => p.openUntil !== 'closed');
+    this.later(500, () => {
+      for (const p of open) this.log('scout', `Place agent · ${p.name}: ${p.openUntil === '24h' ? 'open 24h' : p.openUntil === 'lobby' ? 'lobby open' : `open until ${clock(p.openUntil)}`}${p.safeHaven ? ', safe haven' : ''}.`, p.simulated ? 'Simulated place agent.' : 'Live place agent run by the shopkeeper.');
+      this.sendPlan('This way is 2 min longer, but only 44 m has fewer lights instead of 115 m. Café Mia is open till 1.');
+    });
+  }
+
+  private sendPlan(reason: string) {
+    const stats = structuredClone(this.data.stats);
+    stats.streetwise.score += this.cafeBoost;
+    this.send({ type: 'walk.plan', plan: { routeId: 'route-1', stats, reason, thresholds: this.settings.thresholds, guardian: this.settings.guardianName } });
+  }
+
+  start(choice: 'streetwise' | 'usual') {
+    this.stopTimers();
+    this.passive = false;
+    this.running = true;
+    this.line = choice === 'streetwise' ? this.data.route : this.data.shortest;
+    this.cum = cumulative(this.line);
+    this.total = lineLength(this.line);
+    this.turnsList = turns(this.line, STREETS[choice]);
+    this.progress = 0;
+    this.said.clear();
+    const stop = project(this.line, this.data.stopAt, this.cum);
+    this.stopAt = stop.offset < 40 ? stop.meters : this.total * 0.72;
+    this.state = 'walking';
+    this.send({ type: 'walk.accept', choice });
+    this.send({ type: 'walk.start', replay: true });
+    this.log('scout', `WalkPlan sent: ${STREETS[choice].map(title).join(' → ')}. Score ${this.data.stats.streetwise.score + this.cafeBoost} vs ${this.data.stats.shortest.score}.`, `${this.settings.walkerName} said "${choice === 'streetwise' ? 'go this way' : 'keep usual'}".`, 'Watcher');
+    const first = this.turnsList[0];
+    this.say('scout', `Okay, I'm walking with you. Head down ${title(STREETS[choice][0])}${first && first.direction !== 'arrive' ? `, then ${first.direction} on ${title(first.street)}` : ''}.`);
+    this.timer = window.setInterval(() => this.tick(), TICK);
+    this.tick();
+  }
+
+  private tick() {
+    if (this.state === 'walking') {
+      this.progress = Math.min(this.total, this.progress + WALK_MS * this.settings.timeScale * (TICK / 1000));
+      if (this.progress >= this.stopAt && this.stopAt !== Infinity) {
+        this.progress = this.stopAt;
+        this.stopAt = Infinity;
+        this.state = 'stopped';
+        this.onStopped();
+      }
+    }
+    const p = along(this.line, this.progress, this.cum);
+    this.send({ type: 'walk.position', lngLat: p.lngLat, heading: p.heading, speed: this.state === 'walking' ? WALK_MS : 0, progress: this.progress / this.total, replay: true });
+    if (this.state === 'walking') this.narrate();
+    if (this.progress >= this.total - 0.5 && this.state === 'walking') this.arrive();
+  }
+
+  private narrate() {
+    const m = this.progress;
+    // turns: announce ~120 m out (or as soon as the leg starts if shorter)
+    for (const t of this.turnsList) {
+      const key = `turn:${t.meters}`;
+      if (t.direction === 'arrive' || this.said.has(key)) continue;
+      if (t.meters - m <= 130 && t.meters > m) {
+        this.said.add(key);
+        const left = Math.max(10, Math.round((t.meters - m) / 10) * 10);
+        this.say('scout', `${cap(t.direction)} on ${title(t.street)} in about ${left} metres.`);
+        return;
+      }
+    }
+    // open places just ahead
+    for (const p of this.places) {
+      const key = `place:${p.id}`;
+      if (this.said.has(key) || p.openUntil === 'closed') continue;
+      const pr = project(this.line, p.lngLat, this.cum);
+      if (pr.offset < 45 && pr.meters - m < 70 && pr.meters - m > 0) {
+        this.said.add(key);
+        this.say('watcher', `${p.name} is just ahead, ${openSpoken(p)}.`);
+        if (!p.simulated) this.log('watcher', `Passing ${p.name} (${openSpoken(p)}).`, 'Live place agent confirmed hours.');
+        return;
+      }
+    }
+    // dim stretch heads-up
+    for (const d of this.data.dimStretches) {
+      const key = `dim:${d.id}`;
+      if (this.said.has(key)) continue;
+      const pr = project(this.line, d.line[0], this.cum);
+      if (pr.offset < 25 && pr.meters - m < 60 && pr.meters - m > -10) {
+        this.said.add(key);
+        this.say('watcher', `The next ${d.meters} metres have fewer working lights. I'm with you.`);
+        return;
+      }
+    }
+  }
+
+  private onStopped() {
+    const t = this.settings.thresholds;
+    const dim = this.data.dimStretches.find((d) => d.onRoute);
+    this.log('watcher', `Stopped on ${dim?.name ?? 'a dim stretch'} (score ${dim?.score ?? '—'}). Waiting ${t.stopSeconds} s before asking.`, 'Low-score segment and no open door within 50 m.');
+    this.later(this.scaled(t.stopSeconds), () => {
+      if (this.state !== 'stopped') return;
+      this.state = 'asking';
+      const deadline = Date.now() + this.scaled(t.replySeconds);
+      this.send({ type: 'checkin.ask', agent: 'watcher', text: 'You stopped. All good?', reason: `You've been still for ${t.stopSeconds} s on a stretch of Howard with fewer working lights.`, windowSec: t.replySeconds, deadline });
+      this.say('watcher', 'You stopped. All good?');
+      this.log('watcher', 'Asked aloud: "You stopped. All good?"', `Still for ${t.stopSeconds} s on a low-score segment.`, this.settings.walkerName);
+      this.later(this.scaled(t.replySeconds) + 50, () => {
+        if (this.state === 'asking') this.escalate(`No reply for ${t.replySeconds} s`);
+      });
+    });
+  }
+
+  private escalate(reason: string) {
+    this.state = 'escalated';
+    const p = along(this.line, this.progress, this.cum);
+    const where = 'Howard St, between 4th & 5th';
+    this.log('watcher', 'Escalating with last position and trace.', `${reason}. Standing order: guardian first.`, 'Rescuer');
+    this.send({ type: 'escalate', reason, lngLat: p.lngLat });
+    this.send({ type: 'guardian.alert', reason, lngLat: p.lngLat, where });
+    this.log('rescuer', `Alert sent to ${this.settings.guardianName.split(' ')[0]}'s live link. Handoff packet written. 911 not contacted.`, 'Hackathon build never calls emergency services.', 'Guardian');
+    this.say('rescuer', `I've sent ${this.settings.guardianName.split(' ')[0]} your live location. Say "I'm fine" or tap the button if you're okay.`);
+    this.later(this.scaled(this.settings.thresholds.escalateSeconds), () => {
+      if (this.state === 'escalated') this.log('rescuer', 'Guardian has not cleared the alert. Handoff packet ready: position, route, time, reason.', 'Production would hand off to a licensed dispatch partner here; this build stops.');
+    });
+  }
+
+  private resume(why: string) {
+    this.state = 'walking';
+    this.say('watcher', 'Okay. Walking with you.');
+    this.log('watcher', `Check-in cleared (${why}). Resuming the walk.`, 'Walker answered.');
+  }
+
+  private arrive() {
+    this.state = 'done';
+    this.running = false;
+    window.clearInterval(this.timer);
+    this.say('reporter', `You're home. Night, ${this.settings.walkerName}.`);
+    this.send({ type: 'walk.end', outcome: 'arrived', summary: 'Lamp out on Howard St logged, dark stretch flagged, Café Mia confirmed as a safe haven. Draft 311 report ready for review — nothing sent.' });
+    this.log('reporter', 'Evidence filed: 1 lamp out, 1 dark stretch, 1 haven confirmed. Draft 311 report ready for review.', 'Walk ended. 311 reports stay drafts.', 'Night Auditor');
+  }
+
+  private onMessage(e: Envelope) {
+    const m = e.msg;
+    if (this.sending || this.mine.has(e.id)) return;
+    if (m.type === 'walk.reset') {
+      this.stopTimers();
+      this.state = 'idle';
+      this.running = false;
+      this.passive = false;
+      return;
+    }
+    if (e.from === 'engine' && (m.type === 'walk.plan' || m.type === 'walk.start')) {
+      this.passive = true;
+      this.stopTimers();
+      this.state = 'idle';
+      this.running = false;
+      return;
+    }
+    if (e.from === 'engine' || this.passive) return;
+    if (m.type === 'checkin.reply') {
+      if (m.reply === 'fine' && (this.state === 'asking' || this.state === 'escalated' || this.state === 'stopped')) {
+        if (this.state === 'escalated') this.log('rescuer', 'Walker said they are fine. Guardian alert cleared.', 'Check-in answered after escalation.', 'Guardian');
+        this.resume(m.via === 'voice' ? 'said "I\'m fine"' : 'tapped I\'m fine');
+      } else if (m.reply === 'help' && this.state !== 'escalated' && this.state !== 'done') {
+        if (this.state === 'walking') this.state = 'stopped';
+        this.escalate('Walker asked for help');
+      }
+    }
+    if (m.type === 'guardian.ack' && this.state === 'escalated') {
+      this.say('rescuer', `${m.by} is on it.`);
+      this.log('rescuer', `${m.by} cleared the alert: "I'm on it".`, 'Guardian responded.', this.settings.walkerName);
+    }
+    if (m.type === 'place.update') this.onPlaceUpdate(m.place);
+    if (m.type === 'audit.run') this.runAudit();
+  }
+
+  private onPlaceUpdate(u: Pick<Place, 'id' | 'openUntil' | 'safeHaven' | 'frontLight'>) {
+    const p = this.places.find((x) => x.id === u.id);
+    if (!p) return;
+    Object.assign(p, u);
+    const open = u.openUntil !== 'closed';
+    this.log('scout', `Place agent · ${p.name}: ${open ? `staying open until ${clock(u.openUntil)}` : 'closed for the night'}${u.safeHaven ? ', safe haven' : ''}${u.frontLight ? ', front light on' : ''}.`, p.simulated ? 'Simulated place agent.' : 'Shopkeeper toggled it on their phone.');
+    if (p.id === 'cafe-mia') {
+      const before = 58 + 0;
+      const after = open ? 66 : 49;
+      this.cafeBoost = open ? 3 : -3;
+      this.log('scout', `Re-scored Mission St · 3rd → 4th: ${before} → ${after}. ${open ? 'Route keeps passing the door.' : 'Route still OK; fewer open doors.'}`, 'Open places count for 30% of the score.');
+      if (this.state === 'idle') this.sendPlan(open ? `Café Mia just said it's staying open till ${clock(u.openUntil)}, so the Mission St block got brighter.` : 'Café Mia closed, so the Mission St block has one less open door.');
+      else if (this.state === 'walking') {
+        const pr = project(this.line, p.lngLat, this.cum);
+        if (pr.meters > this.progress) this.say('scout', open ? `Good news: ${p.name} is staying open till ${clock(u.openUntil)}. That block just got brighter.` : `${p.name} just closed. I'll keep you on the lit side.`);
+      }
+    }
+  }
+
+  private runAudit() {
+    this.log('auditor', 'Running overnight audit: re-pulling hours and 311 reports, re-scoring the area.', 'Requested from the control room.');
+    this.later(1400, () => {
+      const ranking = this.data.darknessDebt;
+      const top = ranking[0];
+      this.send({ type: 'audit.result', ranking, draft311: `DRAFT — not submitted. Streetlight outages along ${top.street}. Walkers spent ${top.minutes} walker-minutes on this stretch last night. Cites the open SF 311 streetlight reports on this block (case IDs from DataSF).` });
+      this.log('auditor', `Ranked streets by walker-minutes in the dark. Top: ${top.street} (${top.minutes} min). Draft 311 report prepared.`, 'Nightly job. Reports stay drafts for human review.', 'Reporter');
+    });
+  }
+
+  private stopTimers() {
+    window.clearInterval(this.timer);
+    this.timeouts.forEach((t) => window.clearTimeout(t));
+    this.timeouts = [];
+  }
+
+  dispose() {
+    this.stopTimers();
+    this.unsub();
+    this.running = false;
+  }
+}
+
+function title(s: string) {
+  return s
+    .toLowerCase()
+    .replace(/\b(\w)/g, (c) => c.toUpperCase())
+    .replace(/\bSt\b/, 'St');
+}
+function cap(s: string) {
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+export { AGENT_LABEL };
