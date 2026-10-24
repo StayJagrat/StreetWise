@@ -35,15 +35,26 @@ def norm_name(s: str | None) -> str:
 
 
 def name_sim(a: str | None, b: str | None) -> float:
-    na, nb = norm_name(a), norm_name(b)
-    if not na or not nb:
-        return 0.0
-    r = SequenceMatcher(None, na, nb).ratio()
-    ta, tb = set(na.split()), set(nb.split())
-    shared = ta & tb
-    if shared and (shared == ta or shared == tb) and sum(len(t) for t in shared) >= 5:   # "Starbucks" vs "Starbucks Coffee"
-        r = max(r, 0.9)
-    return r
+    def compare(left: str, right: str) -> float:
+        na, nb = norm_name(left), norm_name(right)
+        if not na or not nb:
+            return 0.0
+        r = SequenceMatcher(None, na, nb).ratio()
+        ta, tb = set(na.split()), set(nb.split())
+        shared = ta & tb
+        if shared and (shared == ta or shared == tb) and sum(len(t) for t in shared) >= 5:
+            r = max(r, 0.9)
+        return r
+
+    full = compare(a or "", b or "")
+    # Google sometimes appends a search-keyword list after a spaced dash,
+    # e.g. "Town Country Market - Sake, Fruits, Beer, Pharmacy, ...".
+    # Compare the business name before that suffix too. Require two words so
+    # a generic prefix such as "Market - ..." cannot match any nearby shop.
+    short = (b or "").split(" - ", 1)[0]
+    if short != (b or "") and len(norm_name(short).split()) >= 2:
+        return max(full, compare(a or "", short))
+    return full
 
 
 def source_text(item: dict) -> str | None:

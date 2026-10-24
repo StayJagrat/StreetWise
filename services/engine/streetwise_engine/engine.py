@@ -24,17 +24,23 @@ LANDMARKS = [  # approximate coordinates, used for search and snapping only
 class Engine:
     def __init__(self, bbox=BBOX):
         t0 = time.time(); self.W = World(bbox); self.lock = threading.RLock(); self.sessions: dict[str, Ctx] = {}
-        self.refs = Norm.reference_paths(self.W); self._norms = {}; self._quick = {}
+        self._norms = {}; self._quick = {}
         self.boot_seconds = round(time.time() - t0, 1)
 
     # ---------- context ----------
     def ctx(self, session: str, day: int, minute: int) -> Ctx:
         base = self.sessions.setdefault(session, Ctx(day, minute)); return Ctx(day, minute, dict(base.overrides))
 
-    def norm(self, ctx: Ctx) -> Norm:
-        k = (ctx.day, ctx.minute // 30)
-        if k not in self._norms: self._norms[k] = Norm.build(self.W, ctx, self.refs)
+    def norm(self, ctx: Ctx, near=None) -> Norm:
+        """Reference distribution for the neighbourhood of `near` (projected x, y in metres, or a (lon, lat) list via center_of)."""
+        cell = Norm.cell_of(near if near is not None else self.W.proj.xy(37.7890, -122.4080))
+        k = (cell, ctx.day, ctx.minute // 30)
+        if k not in self._norms: self._norms[k] = Norm.build(self.W, ctx, cell)
         return self._norms[k]
+
+    def center_of(self, coords):
+        """Projected midpoint of a route given as [[lon, lat], ...]."""
+        lon, lat = coords[len(coords) // 2]; return self.W.proj.xy(lat, lon)
 
     # ---------- quick per-edge quality (used to steer the search, never shown as the score) ----------
     def quick(self, ctx: Ctx):
@@ -69,16 +75,19 @@ class Engine:
                 nx.set_edge_attributes(W.G, w, "wj"); paths[f"j{seed}"] = self._astar(a, b, "wj")
             uniq = {}; [uniq.setdefault(tuple(p), k) for k, p in paths.items()]
             say("scout", "step", f"Found {len(uniq)} distinct candidate routes. Scoring each at the minute you pass every block.", {"n": len(uniq), "why": "alternatives come from the quality-weighted search plus seeded perturbations"})
-            N = self.norm(ctx); ev = []
+            N = self.norm(ctx, (W.G.nodes[a]["p"] + W.G.nodes[b]["p"]) / 2); ev = []
             for p in uniq:
                 m = metrics(W, ctx, list(p)); sc, pts, comp = score(m, N); ev.append(dict(path=list(p), m=m, score=sc, pts=pts, comp=comp))
             fast = next(e for e in ev if e["path"] == paths["fast"]); limit = fast["m"]["minutes"] * (1 + max_extra)
             ok = [e for e in ev if e["m"]["minutes"] <= limit]; best = max(ok, key=lambda e: e["score"])
+            near = [e for e in ev if e["m"]["minutes"] <= fast["m"]["minutes"] * 1.08]; balanced = max(near, key=lambda e: e["score"])
             say("scout", "done", f"Best route scores {best['score']} against {fast['score']} for the fastest, {best['m']['minutes'] - fast['m']['minutes']:+.1f} min. Longest empty stretch {fast['m']['gap_m']:.0f} m to {best['m']['gap_m']:.0f} m.",
                 {"best": best["score"], "fast": fast["score"], "why": "scored every candidate at the minute you pass each block; picked the highest score within +25% walking time"})
+            options = [self._pack("fast", "Fastest", fast, ctx)]
+            if balanced["path"] not in (fast["path"], best["path"]): options.append(self._pack("balanced", "Balanced", balanced, ctx))
+            if best["path"] != fast["path"]: options.append(self._pack("best", "Streetwise", best, ctx))
             out = dict(depart=dict(day=DAYS[day], minute=minute), recommended="best" if best is not fast else "fast", norm=dict(lo=N.lo, hi=N.hi),
-                       routes=[self._pack("fast", "Fastest route", fast, ctx), self._pack("best", "Streetwise route", best, ctx)] if best is not fast else [self._pack("fast", "Fastest route", fast, ctx)],
-                       candidates=len(uniq), ms=round((time.time() - t0) * 1000))
+                       routes=options, candidates=len(uniq), ms=round((time.time() - t0) * 1000))
             return out
 
     def _pack(self, rid, label, e, ctx):
@@ -103,6 +112,30 @@ class Engine:
             if not pl["name"]: continue
             o = place_open(self.W, pl, minute, ctx); unknown = pl["hours"] is None and not pl["help"] and pl["id"] not in ctx.overrides
             out.append([pl["id"], pl["ll"][0], pl["ll"][1], pl["name"], pl["cat"], -1 if unknown else int(o), int(pl["id"] in ctx.overrides)])
+        return out
+
+    def search(self, q, limit=8):
+        """Offline search over named places, streets and landmarks in the cached city. Prefix matches rank first."""
+        q = q.strip().lower()
+        if len(q) < 2: return []
+        if not hasattr(self, "_names"):
+            streets = {}
+            for k, (a, b, ed) in enumerate(self.W.edges):
+                if ed["name"]: streets.setdefault(ed["name"], []).append(k)
+            self._names = [(n.lower(), n, "Landmark", [lo, la]) for n, la, lo in LANDMARKS]
+            self._names += [(pl["name"].lower(), pl["name"], pl["cat"].replace("_", " ").title(), pl["ll"]) for pl in self.W.places if pl["name"]]
+            for n, ks in streets.items():
+                mid = self.W.e_mid[ks[len(ks) // 2]]; self._names.append((n.lower(), n, "Street", self.W.proj.ll(mid)))
+        scored = []
+        for low, name, kind, ll in self._names:
+            if q in low:
+                scored.append((0 if low.startswith(q) else 1, 0 if kind == "Landmark" else 1 if kind == "Street" else 2, len(low), name, kind, ll))
+        scored.sort(); out, seen = [], set()
+        for _, _, _, name, kind, ll in scored:
+            key = (name.lower(), round(ll[0], 3), round(ll[1], 3))
+            if key in seen: continue
+            seen.add(key); out.append(dict(name=name, detail=kind, lon=ll[0], lat=ll[1]))
+            if len(out) >= limit: break
         return out
 
     def landmarks(self): return [dict(name=n, lat=la, lon=lo) for n, la, lo in LANDMARKS]
@@ -176,14 +209,18 @@ class Engine:
                         lamps=lamps, outages=outs, unknown_hours=len(unknown), ll=W.proj.ll(W.e_mid[k]), text=text)
 
     # ---------- darkness debt: where modeled walkers spend the most minutes on the weakest segments ----------
-    def darkness_debt(self, day=4, minute=22 * 60 + 50, walkers=1200, top=5):
+    def darkness_debt(self, day=4, minute=22 * 60 + 50, walkers=300, top=5, near=None):
         with self.lock:
-            key = ("debt", day, minute // 30)
+            cell = Norm.cell_of(near) if near is not None else None; key = ("debt", day, minute // 30, cell)
             if key in self._quick: return self._quick[key]
             import random; W = self.W; ctx = Ctx(day, (minute // 30) * 30); q = self.quick(ctx); thresh = float(np.percentile(q, 25)); random.seed(5); cnt = {}
             h = lambda u, v: float(np.hypot(*(W.G.nodes[u]["p"] - W.G.nodes[v]["p"])))
+            pool = range(len(W.nodes))
+            if near is not None:                       # modeled walkers stay within about 2 km of the area being looked at
+                cx, cy = (cell[0] + 0.5) * Norm.CELL, (cell[1] + 0.5) * Norm.CELL
+                pool = [int(i) for i in np.where(np.hypot(W.node_p[:, 0] - cx, W.node_p[:, 1] - cy) <= 1.4 * Norm.CELL)[0]] or pool
             for _ in range(walkers):
-                a, b = random.sample(range(len(W.nodes)), 2)
+                a, b = random.sample(pool, 2)
                 if np.hypot(*(W.node_p[a] - W.node_p[b])) < 500: continue
                 path = nx.astar_path(W.G, W.nodes[a], W.nodes[b], heuristic=h, weight="length")
                 for u, v in zip(path, path[1:]):

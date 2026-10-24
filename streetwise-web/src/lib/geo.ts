@@ -1,4 +1,4 @@
-import type { LngLat } from './types';
+import type { LngLat, RouteStep } from './types';
 
 const R = 6371000;
 const rad = (d: number) => (d * Math.PI) / 180;
@@ -121,5 +121,14 @@ export function turns(line: LngLat[], streets: string[]): Turn[] {
   }
   out.forEach((t, k) => (t.street = streets[k + 1] ?? ''));
   out.push({ meters: cum[cum.length - 1], direction: 'arrive', street: 'HOME' });
+  return out;
+}
+
+/** Use the engine's named street steps for the cached pilot route. */
+export function turnsFromSteps(steps: RouteStep[], length: number): Turn[] {
+  const out: Turn[] = steps
+    .filter((s) => /left|right/.test(s.maneuver))
+    .map((s) => ({ meters: s.at_m, direction: s.maneuver.includes('left') ? 'left' : 'right', street: s.street === 'the path' ? 'walking path' : s.street }));
+  out.push({ meters: length, direction: 'arrive', street: 'DESTINATION' });
   return out;
 }

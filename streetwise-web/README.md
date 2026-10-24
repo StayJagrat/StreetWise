@@ -5,9 +5,9 @@ It is one React + Vite PWA with five screens that all join the same walk room:
 
 | Route | Who | What |
 |---|---|---|
-| `/walk` | Walker, demo phone + earbuds | Scout's route offer → walking (street-sign turns, voice) → check-in → guardian alerted → home |
+| `/walk` | Walker, demo phone + earbuds | Scout's route offer → walking (street-sign turns, voice) → check-in → guardian alerted → arrival |
 | `/guardian/:walk` | Judge's phone via QR | Live map, full-screen alert, "I'm on it", handoff packet. No install, no login |
-| `/shop/:place` | Teammate as shopkeeper | Staying open / safe haven / front light → drives the place agent |
+| `/shop` | Teammate as shopkeeper | Simulated hours update for a place on the route |
 | `/room` | Laptop on stage | Map, agent feed with reasons, why-this-street card, darkness debt, replay timeline, guardian QR |
 | `/setup` | Walker, once | Guardian + standing orders (stop 90 s, reply 45 s), "never calls 911" |
 
@@ -17,7 +17,8 @@ It is one React + Vite PWA with five screens that all join the same walk room:
 
 ```bash
 npm install
-npm run assets        # regenerates mascots, icons and public/data/demo-route.json (already committed)
+npm run assets        # regenerates mascots and icons
+../.venv/bin/python ../scripts/export_demo.py  # from streetwise-web: refreshes the engine-backed offline JSON
 cd ../services/api && ../../.venv/bin/uvicorn main:app --port 8000 --reload --reload-dir . --reload-dir ../engine
 # In another terminal:
 cd streetwise-web && npm run dev   # app on :5173, proxies /ws to the API
@@ -29,22 +30,23 @@ PWAs need HTTPS for the mic, location and install. Put one tunnel in front of Vi
 cloudflared tunnel --url http://localhost:5173     # or: ngrok http 5173
 ```
 
-Open `https://<tunnel>/room` on the laptop, scan the QR with a second phone (guardian), open `/walk` on the demo phone and `/shop/cafe-mia` on a teammate's phone.
+Open `https://<tunnel>/room` on the laptop, scan the QR with a second phone (guardian), open `/walk` on the demo phone and `/shop` on a teammate's phone.
 
 For the demo build: `npm run build && npm run preview` (port 4173, same `/ws` proxy).
 
 ## Demo mode vs live mode
 
-**Demo mode (default)** — `src/lib/engine.ts` plays the five agents from cached data so the demo never depends on Wi-Fi or on the agents being up:
+**Demo mode (default)** — `src/lib/engine.ts` replays the five agent roles from cached route data. The route and score work without the API; map tiles need a connection or a prior cache:
 
 - GPS is replayed along the route, with the "DEMO · GPS REPLAY · ×N" tape always visible.
-- One stop is injected on the dim stretch of Howard St. After the stop threshold the Watcher asks; if there's silence, the Rescuer alerts the guardian.
-- Shop toggles re-score the block and the walker hears it.
+- One stop is injected on the engine-selected stretch. After the stop threshold the Watcher asks; if there's silence, the Rescuer alerts the guardian.
+- The simulated shop toggle re-scores the fixed routes using an engine-calculated what-if cached for offline replay.
 - Replay speed is set in `/setup` (×6 by default; thresholds are scaled by the same factor and the UI says so).
+- The control-room gateway replay uses a labeled ×30 playback and scales its Watcher thresholds for a short stage demo.
 - Reloading `/walk` starts a fresh walk (`walk.reset`).
 - If the walker phone dies, press **Start demo walk here** in the control room.
 
-**Live mode** — `VITE_ENGINE=off` (or `/walk?engine=off`): no local engine. The walker sends real GPS fixes, and the gateway's agents send everything else using the same messages.
+**Gateway mode** — `VITE_ENGINE=off` (or `?engine=off`): the frontend loads `/api/demo` from the backend, or `/api/route-demo` for a selected destination. Walk, guardian, shop, and control-room screens share `/ws`; the server runs the same deterministic Python route and Watcher logic. If route data is missing, the selected route shows an error instead of substituting another corridor.
 
 ## Wiring the gateway (Brain)
 
@@ -92,18 +94,17 @@ The "Go this way" tap already unlocks audio, starts the mic and requests the scr
 
 ## Map (City role)
 
-The map uses MapLibre GL with OpenFreeMap vector tiles (keyless). They're recolored in `src/lib/mapStyle.ts` with the Figma `map/*` variables: Night for the walker and control room, Day for the guardian and shop. Tiles are cached by the service worker. If the tile server is unreachable, the route, lamps and places still draw.
+The map uses MapLibre GL with a self-hosted Protomaps PMTiles archive when available. Run `./scripts/fetch_tiles.sh` from the repository root to copy the cached San Francisco extract from `legacy/web/` (the archive stays ignored). The style uses the Figma `map/*` variables: Night for the walker and control room, Day for the guardian and shop. The service worker caches tiles; the route, lamps and places still draw if map tiles are unavailable.
 
-`public/data/demo-route.json` holds the demo corridor:
+`public/data/demo-route.json` is generated by `.venv/bin/python scripts/export_demo.py` from the deterministic Python engine and cached pilot data. `GET /api/demo` serves the same shape for live mode. The corridor is Powell St BART → Transamerica Pyramid area, Friday 11:04 PM:
 
-- real OSM street geometry (OSRM foot routing), Montgomery BART → Mission → 4th → Howard → 5th → Folsom
-- the shortest path for comparison
-- dim stretches with their evidence text
-- places, with `simulated: true` on everything not run by a teammate
-- Route 1 stats from the data spike: 60 vs 49, 44 m vs 115 m, +2.1 min
-- darkness-debt ranking
+- OSM street graph geometry for the scored route and the shortest path
+- scored stretches with OSM and SF 311 streetlight evidence, plus listed hours
+- real OSM places; the shopkeeper interaction is labelled simulated
+- current route stats from the engine: 63 vs 57, 230 m vs 510 m longest stretch without a listed open place or help point, +3.1 min. Real matched hours evidence changes these numbers; re-run the export script after changing the cache.
+- darkness-debt ranking from modeled trips, never observed foot traffic
 
-To match the stage numbers exactly, replace `route` / `shortest` / `dimStretches` with geometry exported from `data/spike_score.py`.
+Place hours are missing for some locations and count as closed. A rules-based parser filled 153 OSM schedules from real Apify source results; unmatched shops remain simulated. The mapped endpoint is the nearest cached street node, about 58 m from the Pyramid.
 
 To show per-segment scores in the control room, drop a `public/data/segments.geojson`: LineString features with `properties.score` (0–100) and `properties.confidence`. Brighter and wider means a better score. It is never drawn as a crime heatmap.
 

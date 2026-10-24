@@ -2,8 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import MapView from '../components/MapView';
 import { Button, DemoTape, HoldButton, Icon, Initials, LinkBadge, Mascot, Sheet, StreetSign } from '../components/ui';
-import { DemoEngine, STREETS } from '../lib/engine';
-import { cumulative, lineLength, project, turns } from '../lib/geo';
+import { DemoEngine } from '../lib/engine';
+import { cumulative, lineLength, project, turnsFromSteps } from '../lib/geo';
 import { AGENT_LABEL, meters, timeOf } from '../lib/format';
 import { getRoomStore, loadSettings, mergedPlaces, useDemoData, useWalk, walkIdFromUrl } from '../lib/store';
 import { canListen, isMuted, listen, setMuted, speak, unlockAudio, type ListenerHandle } from '../lib/voice';
@@ -14,7 +14,7 @@ const engineEnabled = () => new URLSearchParams(location.search).get('engine') !
 
 export default function Walk() {
   const walkId = walkIdFromUrl();
-  const data = useDemoData();
+  const { data, error } = useDemoData();
   const settings = useMemo(loadSettings, []);
   const { state, send, status, room } = useWalk(walkId, 'walker');
   const engine = useRef<DemoEngine | null>(null);
@@ -100,6 +100,7 @@ export default function Walk() {
   }, []);
 
   const go = (choice: 'streetwise' | 'usual') => {
+    if (!data) return;
     unlockAudio(); // the "Walk with me" tap doubles as the audio unlock
     void keepAwake(true);
     if (canListen() && !listener.current) {
@@ -107,7 +108,14 @@ export default function Walk() {
     }
     if (engine.current) engine.current.start(choice);
     else {
-      send({ type: 'walk.accept', choice });
+      send({ type: 'walk.reset' });
+      send({
+        type: 'walk.accept', choice, guardian: settings.guardianName,
+        thresholds: settings.thresholds,
+        origin: { lat: data.start.lngLat[1], lon: data.start.lngLat[0] },
+        dest: { lat: data.end.lngLat[1], lon: data.end.lngLat[0] },
+        day: data.scenario.day ?? 4, minute: data.scenario.departureMinute,
+      });
       send({ type: 'walk.start', replay: false });
     }
   };
@@ -121,9 +129,9 @@ export default function Walk() {
 
   const line = data ? (state.choice === 'usual' ? data.shortest : data.route) : [];
   const total = useMemo(() => (line.length ? lineLength(line) : 0), [line]);
-  const turnList = useMemo(() => (line.length ? turns(line, STREETS[state.choice === 'usual' ? 'usual' : 'streetwise']) : []), [line, state.choice]);
+  const turnList = useMemo(() => (line.length && data ? turnsFromSteps(data.routeSteps[state.choice === 'usual' ? 'shortest' : 'streetwise'], lineLength(line)) : []), [line, data, state.choice]);
 
-  if (!data) return <div className="screen" data-theme="night" />;
+  if (!data) return <div className="screen" data-theme="night" role={error ? 'alert' : undefined} style={{ padding: 24 }}>{error ?? 'Loading route…'}</div>;
 
   const places = mergedPlaces(data, state);
   const progress = state.position?.progress ?? 0;
@@ -132,10 +140,14 @@ export default function Walk() {
   const toNext = next ? next.meters - walked : 0;
   const remaining = Math.max(0, total - walked);
   const etaMin = remaining / 1.35 / 60;
-  const arrive = now + etaMin * 60000;
   const phase = state.phase;
   const plan = state.plan;
   const stats = plan?.stats ?? data.stats;
+  const demoClock = new Date(now);
+  demoClock.setHours(Math.floor(data.scenario.departureMinute / 60), data.scenario.departureMinute % 60, 0, 0);
+  const arrive = state.replay && engineEnabled()
+    ? demoClock.getTime() + (state.choice === 'usual' ? stats.shortest.minutes : stats.streetwise.minutes) * 60000
+    : now + etaMin * 60000;
   const brightened = Object.keys(state.brightened);
 
   const puck = state.position && phase !== 'preview'
@@ -169,7 +181,7 @@ export default function Walk() {
           </div>
         ) : phase !== 'arrived' && next ? (
           <StreetSign
-            street={next.direction === 'arrive' ? 'HOME' : next.street}
+            street={next.direction === 'arrive' ? data.end.name : next.street}
             direction={next.direction === 'arrive' ? 'arrive' : toNext > 160 ? 'straight' : next.direction}
             instruction={next.direction === 'arrive' ? `Arrive · ${meters(toNext)}` : `${toNext > 160 ? 'Then turn' : 'Turn'} ${next.direction} · ${meters(toNext)}`}
           />
@@ -202,11 +214,11 @@ export default function Walk() {
               <LinkBadge status={status} />
             </span>
           </div>
-          <p className="t-spoken">{plan?.reason ?? 'Checking lights and open places on the way home…'}</p>
+          <p className="t-spoken">{plan?.reason ?? 'Checking lights and open places along the route…'}</p>
           <div className="ticket">
             <div>
               <div className="t-number ticket__v">{Math.round(stats.streetwise.minutes)} MIN</div>
-              <div className="ticket__k">home by {timeOf(now + stats.streetwise.minutes * 60000)}</div>
+              <div className="ticket__k">arrive by {timeOf(arrive)}</div>
             </div>
             <div>
               <div className="t-number ticket__v" style={{ color: 'var(--route)' }}>
@@ -290,7 +302,7 @@ export default function Walk() {
             {state.alert?.ackBy ? `${guardianFirst} is on it` : `Waiting for ${guardianFirst} to respond…`}
           </div>
           <Button kind="fine" icon="check" tall block onClick={() => reply('fine')}>I'm okay now</Button>
-          <p className="t-caption center">Streetwise doesn't call 911. If you're in danger, call 911 yourself.</p>
+          <p className="t-caption center">Streetwise doesn't call 911. If you need emergency help, call 911 yourself.</p>
         </Sheet>
       )}
 
@@ -300,7 +312,7 @@ export default function Walk() {
             <Mascot agent="reporter" state="done" size={56} />
             <div>
               <div className="t-caption">Reporter</div>
-              <h2 className="t-display" style={{ fontSize: 28 }}>You're home.</h2>
+              <h2 className="t-display" style={{ fontSize: 28 }}>You've arrived.</h2>
             </div>
           </div>
           <p className="t-caption" style={{ fontSize: 15, lineHeight: '21px' }}>{state.summary}</p>

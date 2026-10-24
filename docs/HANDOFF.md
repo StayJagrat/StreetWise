@@ -4,7 +4,7 @@ Written Saturday Oct 24, 2026. Deadline: **Sunday Oct 25, 9:00 AM PT** (be at th
 
 ## Decisions made
 
-1. **Abhishek's frontend is the app.** `streetwise-web/` (React + Vite PWA, Figma tokens, five mascots, five screens) is the only frontend we build on. `apps/web` is our earlier frontend; keep it as a reference until the new one is wired to the backend, then delete it.
+1. **Abhishek's frontend is the app.** `streetwise-web/` (React + Vite PWA, Figma tokens, five mascots, five screens) is the only frontend we build on. The earlier frontend is under `legacy/web/` as a reference until its offline basemap is ported.
 2. **Trunk branch = `main`** on `StayJagrat/StreetWise` (Jagrat renamed Abhishek's `streetwise-web` branch to `main`; same commit `519db43`).
 3. **Work in small pieces.** One branch per piece, named plainly after the piece (`gateway`, `live-mode`, not `feat/gateway`), one small PR into `main`, merged as soon as it runs. No long-lived branches. Rebase on `main` before opening a PR.
 4. **Design = Abhishek's Figma build only.** Colours, type, mascots, spacing and screens come from `streetwise-web/` (`src/styles/tokens.css`, `public/mascots/`). Do not bring in our older amber/Lamp brand (`docs/BRAND.md`, `docs/brand-sheet.html`), `apps/web` styles, or placeholder avatars. New UI must use his tokens and components, and any new element gets approved by Abhishek in Figma first.
@@ -15,21 +15,22 @@ Written Saturday Oct 24, 2026. Deadline: **Sunday Oct 25, 9:00 AM PT** (be at th
 
 | Part | Where | State |
 | --- | --- | --- |
-| Frontend (Figma-faithful) | `streetwise-web/` | Works alone in demo mode (browser-only replay engine). Live mode (`VITE_ENGINE=off`) waits for a gateway |
+| Frontend (Figma-faithful) | `streetwise-web/` | Powell BART route plus searched destinations inside the pilot box. Offline replay and gateway mode are wired to `/ws`; local Protomaps tiles are used when present |
 | Scoring engine, routing, steps, why-this-street, darkness debt, Watcher rules | `services/engine/` | Working, deterministic, tested on the downtown pilot box |
-| API (REST + WebSocket hub) | `services/api/main.py` | Working. Its WebSocket speaks our old protocol, not Abhishek's envelopes |
+| API (REST + WebSocket hub) | `services/api/main.py`, `live_walk.py` | `/ws` forwards typed envelopes and drives Scout, Watcher, Rescuer, shop updates, and overnight audit through the deterministic engine |
 | Fetch.ai agents (Scout, Watcher, Rescuer, Reporter, Night Auditor, place agent) | `services/agents/` | 23/23 offline tests. Not on Agentverse yet |
-| Hours pipeline (Apify + Claude parser) | `services/hours/` | Real 10-place pharmacy test works ($0.04). 3 of 10 matched to OSM. Not run at scale |
+| Hours pipeline (Apify + parser) | `services/hours/` | Real eight-category cache: 824 fetched records, 380 matched to OSM, 153 missing OSM schedules filled by the deterministic rules parser. Apify recorded $7.07 total against the $10 cap. Claude batch parsing was stopped because 374 source rows would make uncapped paid calls |
 | Creao Hours Detective | `services/creao/` | Client and prompt done, key valid. No real run yet |
-| Old frontend | `apps/web/` | Superseded. Has a self-hosted offline basemap (PMTiles) worth porting |
+| Old frontend | `legacy/web/` | Superseded. Has a self-hosted offline basemap (PMTiles) worth porting |
 | Data cache | `data/cache/` | Pilot box only: lat 37.784 to 37.794, lng -122.416 to -122.400 |
+| Block imagery explanation | `services/api/vision.py` | Optional Mapillary + Claude endpoint; shows a missing-key state and sets `usedForScore: false` when imagery cannot be fetched |
 
-## Important gap to decide first
+## Demo corridor decision
 
 Abhishek's demo corridor is Montgomery BART → Mission → 4th → Howard → 5th → Folsom. **Our cached data and engine only cover the pilot box around Powell St BART → Transamerica Pyramid.** Howard and Folsom are south of the box.
 
-Pick one (recommended: A):
-- **A. Move the demo to our box** (Powell BART → Pyramid, Friday 11:04 PM). Everything already scores there. Only `public/data/demo-route.json` and the start/end names change.
+The user chose A for Piece 3:
+- **A. Move the demo to our box** (Powell BART → Pyramid, Friday 11:04 PM). The cached engine scores this corridor.
 - **B. Keep his corridor** and download data for it with `scripts/fetch_data.py`. Overpass has been slow and flaky, so budget an hour and keep A as the fallback.
 
 ## The pieces, in order
@@ -92,7 +93,7 @@ Each new signal needs a line in the formula docs and a "data missing" state.
 - README with run steps, Devpost text, 3 to 5 min video, 3 min pitch, public repo with no keys, Creao agent ID and run link.
 
 ## Demo-day numbers to protect
-Friday 11:04 PM, Powell BART → Transamerica Pyramid: typically about 55 vs 49, about +3.2 min, longest empty stretch about 450 m vs 650 m. Across random walks the median gain is about +5.9 to +7 points for about 0.2 to 0.5 extra minutes. The score uses no crime data and no model. Always say "conditions, not a safety rating".
+With the current real-hours evidence export, Friday 11:04 PM Powell BART → Transamerica Pyramid scores 63 vs 57, takes 21.1 vs 18.0 min, and has a longest empty stretch of 230 m vs 510 m. These route-specific numbers can change when the hours evidence changes. The random-walk summary has not been recalculated against this evidence export. The score uses no crime data and no model. Always say "conditions, not a safety rating".
 
 ## Run it locally
 
@@ -114,5 +115,7 @@ If `.venv`, `.venv-agents` or `.venv-hours` are missing, recreate them from `ser
 
 ## Log (add a line per finished piece; newest last)
 - 2026-10-24: Trunk is `main`. Local branch `backend-import` holds Abhishek's commit plus our uncommitted backend. Nothing committed or pushed from our side yet.
-- 2026-10-24: Piece 1 prepared on `backend-import`: moved the earlier frontend to `legacy/web`, staged the backend and supporting files, updated the root README and ignores, and confirmed the restarted API returns HTTP 200 in the browser. Commit awaits user approval.
-- 2026-10-24: Piece 2 prepared on `gateway`: FastAPI now relays walk envelopes at `/ws`, replays room history to joiners, and keeps `/ws/{session}`. Vite proxies `/ws` to port 8000. Confirmed forwarding, history, legacy WebSocket, a production frontend build, and linked `/room` and `/walk` browser views. Commit awaits the user.
+- 2026-10-24: Piece 1 prepared on `backend-import`: moved the earlier frontend to `legacy/web`, staged the backend and supporting files, updated the root README and ignores, and confirmed the restarted API returns HTTP 200 in the browser. User committed as `baf7e34`.
+- 2026-10-24: Piece 2 prepared on `gateway`: FastAPI now relays walk envelopes at `/ws`, replays room history to joiners, and keeps `/ws/{session}`. Vite proxies `/ws` to port 8000. Confirmed forwarding, history, legacy WebSocket, a production frontend build, and linked `/room` and `/walk` browser views. User committed as `aa4b517`.
+- 2026-10-24: Piece 3 prepared on `engine-demo-data`: Powell BART → Transamerica Pyramid route and shortest path now come from the deterministic Python engine and cached OSM/SF 311/BART data. `/api/demo` and offline JSON match exactly: score 55 vs 49, empty stretch 450 vs 650 m, 21.2 vs 18.0 min; simulated Walgreens hours update has an engine-calculated fixed-route what-if of 69 vs 60. Verified export, build, API, `/walk`, `/shop`, and `/room` with the route evidence card in the browser. Map tiles still need a connection or prior cache. Commit awaits the user.
+- 2026-10-24: Integration pass on `engine-demo-data`: `/ws` now activates the deterministic live-walk adapter, supports selected destinations snapped within 150 m, and refuses to start a fallback route when planning fails. Verified the browser control room, replay movement, dim-stretch Watcher check-in, guardian escalation link, route search, local Protomaps map, and a custom-destination walker route. After importing real hours evidence, the offline export and API match at 63 vs 57, 230 m vs 510 m empty stretches, and 21.1 vs 18.0 minutes; the engine reports 153 added schedules and 339 places whose hours remain missing. The eight-category Apify cache cost $7.07 total, under the $10 cap; the source rules parser processed 380 OSM matches. A 40-place parser evaluation measured 95.1% weekly half-hour-slot agreement (62.5% of the sample reached at least 95%). Build and 7 unit tests pass. Agentverse still needs the eight account seeds; live Mapillary, 511, and Ticketmaster features need provider keys. No Agentverse deployment or field walk was performed. No commit or push.

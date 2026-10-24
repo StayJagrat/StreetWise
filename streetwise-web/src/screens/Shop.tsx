@@ -5,14 +5,15 @@ import { clock } from '../lib/format';
 import { loadSettings, mergedPlaces, useDemoData, useWalk, walkIdFromUrl } from '../lib/store';
 import './shop.css';
 
-// The shopkeeper's phone drives the place agent: "staying open", safe haven, front light.
+// The demo shopkeeper updates listed hours, a place to pause, and front light.
 
 const TIMES = ['22:00', '22:30', '23:00', '23:30', '00:00', '00:30', '01:00', '01:30', '02:00', '03:00', '04:00'];
 
 export default function Shop() {
-  const { place: placeId = 'cafe-mia' } = useParams();
+  const { place: routePlace } = useParams();
   const walkId = walkIdFromUrl();
-  const data = useDemoData();
+  const { data, error } = useDemoData();
+  const placeId = routePlace ?? data?.whatIf?.placeId ?? data?.places[0]?.id ?? '';
   const settings = useMemo(loadSettings, []);
   const { state, send, status } = useWalk(walkId, 'shop');
   const [toast, setToast] = useState<number | null>(null);
@@ -44,7 +45,7 @@ export default function Shop() {
     return () => window.clearTimeout(t);
   }, [toast]);
 
-  if (!data) return <div className="screen" data-theme="day" />;
+  if (!data) return <div className="screen" data-theme="day" role={error ? 'alert' : undefined} style={{ padding: 24 }}>{error ?? 'Loading route…'}</div>;
   if (!place) return <div className="screen" data-theme="day" style={{ padding: 24 }}>Unknown place “{placeId}”.</div>;
 
   const idx = Math.max(0, TIMES.indexOf(until));
@@ -67,7 +68,7 @@ export default function Shop() {
         <section className="card shop__open">
           <div className="shop__open-text">
             <h2 className="t-title">{open ? 'Staying open late' : 'Closed for the night'}</h2>
-            <p className="t-caption" style={{ margin: 0 }}>Walkers nearby see you as an open place, and routes can pass your door.</p>
+            <p className="t-caption" style={{ margin: 0 }}>{open ? 'Walkers nearby see your updated hours when they pass your door.' : 'Turn on staying open to share updated hours with walkers nearby.'}</p>
             <div className={`stepper${open ? '' : ' stepper--off'}`}>
               <button type="button" aria-label="Earlier" onClick={() => { const u = TIMES[Math.max(0, idx - 1)]; setUntil(u); publish({ until: u }); }} disabled={!open}>–</button>
               <div>
@@ -85,15 +86,15 @@ export default function Shop() {
         <section className="card shop__list">
           <div className="shop__row">
             <div>
-              <div className="t-headline">Safe haven</div>
+              <div className="t-headline">Place to pause</div>
               <div className="t-caption">Walkers can wait inside if they need to</div>
             </div>
-            <Toggle on={haven && open} label="Safe haven" onChange={(v) => { setHaven(v); publish({ haven: v }); }} />
+            <Toggle on={haven && open} label="Place to pause" onChange={(v) => { setHaven(v); publish({ haven: v }); }} />
           </div>
           <div className="shop__row">
             <div>
               <div className="t-headline">Front light on</div>
-              <div className="t-caption">Your light counts toward the block's score</div>
+              <div className="t-caption">Shown to walkers; this is not part of the score</div>
             </div>
             <Toggle on={light} label="Front light on" onChange={(v) => { setLight(v); publish({ light: v }); }} />
           </div>
@@ -103,7 +104,7 @@ export default function Shop() {
           <div className="shop__toast" role="status">
             <Mascot agent="scout" state="done" size={48} />
             <div>
-              <div className="t-headline" style={{ fontSize: 15 }}>Your block just got brighter for people walking nearby.</div>
+              <div className="t-headline" style={{ fontSize: 15 }}>Your hours update is visible to nearby walkers.</div>
               <div className="shop__toast-sub">{walking ? `Scout kept ${settings.walkerName}'s walk past your door · just now` : 'Scout will offer it to the next walker · just now'}</div>
             </div>
           </div>

@@ -36,7 +36,9 @@ def main(argv=None):
 
     print("== 1/4 fetch ==")
     if a.dry_run:
-        fetch_apify.main(["--dry-run", "--tiles", str(a.tiles)] + (["--categories", a.categories] if a.categories else []))
+        fetch_apify.main(["--dry-run", "--tiles", str(a.tiles)]
+                         + (["--categories", a.categories] if a.categories else [])
+                         + (["--budget-usd", str(a.budget_usd)] if a.budget_usd is not None else []))
         return
     if not a.skip_fetch:
         args = list(mock) + ["--tiles", str(a.tiles)]

@@ -63,7 +63,7 @@ def build_scout():
         if re.match(r"^(start|begin)( the| my)?( walk|walking)?$", low): return await start_walk(ctx, sender), None
         if re.match(r"^(stop|end|cancel)( the| my)?( walk|walking| check-?ins?)?$|^(i'?m|i am)( home| there| here| arrived|)( safe)?$|^arrived$", low) and walk:
             await ctx.send(address_of("watcher"), WalkStop(session=walk["session"], user=sender)); _put(ctx, f"walk:{sender}", None)
-            return "Walk ended. I stopped checking in. Stay safe.", None
+            return "Walk ended. I stopped checking in.", None
         if walk and re.match(r"^(ok|okay|safe|i'?m ok|i am ok|i'?m okay|i'?m safe|all good|fine|here|yes|y|good)$", low):
             await ctx.send(address_of("watcher"), CheckInAck(session=walk["session"], user=sender)); return "Thanks, checked in. I will ask again later.", None
         if low.startswith("report"): return await report(ctx, sender, t), None
@@ -92,7 +92,7 @@ def build_scout():
                                                        reply_deadline_s=deadline, route_coords=plan["coords"], destination=plan["destination"]))
         _put(ctx, f"walk:{sender}", dict(session=plan["session"]))
         return (f"Walk started: {plan['label']} (about {plan['minutes']:.0f} min). My watcher will check in about every {every // 60 or 1} min. Reply **ok** each time. "
-                f"If you stop replying for {deadline}s, my rescuer prepares a handoff packet for your trusted contact. It never contacts emergency services: if you are in danger, call 911 yourself. "
+                f"If you stop replying for {deadline}s, my rescuer prepares a handoff packet for your trusted contact. It never contacts emergency services. If you need emergency help, call 911 yourself. "
                 "Say **stop walk** when you arrive.")
 
     async def report(ctx: Context, sender: str, text: str) -> str:

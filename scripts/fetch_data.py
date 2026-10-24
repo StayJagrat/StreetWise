@@ -66,11 +66,17 @@ def osm():
 
 def sf311():
     s, w, n, e = BBOX
-    def q(where, sel, limit=50000):
-        r = requests.get("https://data.sf.gov/resource/vw6y-z8j6.json", params={"$select": sel, "$where": where, "$limit": limit}, headers=UA, timeout=120); r.raise_for_status(); return r.json()
+    f = CACHE / "sf311_history.json"; pilot = CACHE / "sf311_history_pilot.json"
+    if f.exists() and not pilot.exists(): pilot.write_bytes(f.read_bytes())
     box = f"within_box(point_geom,{s},{w},{n},{e})"
-    hist = q(f"service_name='Streetlights' AND requested_datetime > '2020-01-01' AND {box}", "service_request_id,requested_datetime,closed_date,status_description,service_details,lat,long")
-    (CACHE / "sf311_history.json").write_text(json.dumps(hist)); print(f"311: {len(hist)} streetlight cases since 2020 in the box", flush=True)
+    where = f"service_name='Streetlights' AND requested_datetime > '2020-01-01' AND {box}"
+    sel = "service_request_id,requested_datetime,closed_date,status_description,service_details,lat,long"
+    hist, page = [], 50000
+    while True:                                 # page through the Socrata API (citywide is more than one page)
+        r = requests.get("https://data.sf.gov/resource/vw6y-z8j6.json", params={"$select": sel, "$where": where, "$order": "service_request_id", "$limit": page, "$offset": len(hist)}, headers=UA, timeout=180)
+        r.raise_for_status(); rows = r.json(); hist += rows
+        if len(rows) < page: break
+    f.write_text(json.dumps(hist)); print(f"311: {len(hist)} streetlight cases since 2020 in the box", flush=True)
 
 
 def bart():

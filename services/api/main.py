@@ -16,8 +16,12 @@ from pydantic import BaseModel, Field
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "services" / "engine"))
 from streetwise_engine.engine import Engine  # noqa: E402
+from demo_data import build_demo_data  # noqa: E402
+from live_walk import LiveWalk  # noqa: E402
+from vision import router as vision_router  # noqa: E402
 
 app = FastAPI(title="Streetwise API", version="0.1.0")
+app.include_router(vision_router)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 engine: Engine | None = None
 last_route: dict[str, dict] = {}
@@ -63,6 +67,32 @@ async def health(): return dict(ok=engine is not None, boot_seconds=engine.boot_
 
 @app.get("/api/meta")
 async def meta(): return engine.meta()
+
+
+@app.get("/api/demo")
+async def demo():
+    """The same engine-backed data exported for the PWA's offline replay."""
+    return await run_in_threadpool(build_demo_data, engine)
+
+
+@app.get("/api/route-demo")
+async def route_demo(lat: float, lon: float, name: str = "Destination", olat: float | None = None, olon: float | None = None, oname: str = "Start",
+                     day: int = 4, minute: int = 23 * 60 + 4):
+    """Engine-backed DemoData for any start and destination in San Francisco at any departure time (olat/olon omitted = Powell St BART)."""
+    from demo_data import build_route_data
+    if not (0 <= day <= 6 and 0 <= minute < 1440):
+        raise HTTPException(422, "day must be 0-6 and minute 0-1439")
+    origin = (olat, olon) if olat is not None and olon is not None else None
+    try:
+        return await run_in_threadpool(build_route_data, engine, lat, lon, name, origin, oname if origin else None, day, minute)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.get("/api/search")
+async def search(q: str, limit: int = 8):
+    """Offline search over named places, streets and landmarks in the cached city."""
+    return await run_in_threadpool(engine.search, q, min(limit, 20))
 
 
 @app.get("/api/landmarks")
@@ -270,8 +300,27 @@ class WalkRoom:
         self.history: deque[dict] = deque(maxlen=400)
         self.lock = asyncio.Lock()
 
+    async def publish(self, env: dict, exclude: WebSocket | None = None):
+        kind = env["msg"].get("type")
+        async with self.lock:
+            if kind == "walk.reset":
+                self.history = deque((e for e in self.history if e["msg"].get("type") in ("place.update", "guardian.join")), maxlen=400)
+            elif kind == "walk.start":
+                self.history = deque((e for e in self.history if e["msg"].get("type") in ("agent.log", "walk.plan", "place.update", "guardian.join")), maxlen=400)
+            elif kind == "walk.position":
+                self.history = deque((e for e in self.history if e["msg"].get("type") != "walk.position"), maxlen=400)
+            self.history.append(env)
+            for peer in list(self.clients):
+                if peer is exclude:
+                    continue
+                try:
+                    await peer.send_json(env)
+                except (RuntimeError, WebSocketDisconnect):
+                    self.clients.discard(peer)
+
 
 walk_rooms: dict[str, WalkRoom] = {}
+live_walks: dict[str, LiveWalk] = {}
 
 
 @app.websocket("/ws")
@@ -291,21 +340,20 @@ async def ws_walk(sock: WebSocket, walk: str = "demo", role: str = "unknown"):
             if not isinstance(env, dict) or env.get("walkId") != walk or not isinstance(env.get("msg"), dict):
                 continue
             kind = env["msg"].get("type")
-            async with room.lock:
-                if kind == "walk.reset":
-                    room.history = deque((e for e in room.history if e["msg"].get("type") in ("place.update", "guardian.join")), maxlen=400)
-                elif kind == "walk.start":
-                    room.history = deque((e for e in room.history if e["msg"].get("type") in ("agent.log", "walk.plan", "place.update", "guardian.join")), maxlen=400)
-                elif kind == "walk.position":
-                    room.history = deque((e for e in room.history if e["msg"].get("type") != "walk.position"), maxlen=400)
-                room.history.append(env)
-                for peer in list(room.clients):
-                    if peer is sock:
-                        continue
-                    try:
-                        await peer.send_json(env)
-                    except (RuntimeError, WebSocketDisconnect):
-                        room.clients.discard(peer)
+            await room.publish(env, exclude=sock)
+            # The local replay sends its own envelopes as `engine`. Only a
+            # walker-originated accept activates server-side agent responses.
+            if env.get("from") in ("walker", "room") and kind in ("walk.accept", "audit.run") and walk not in live_walks:
+                live_walks[walk] = LiveWalk(walk, engine, room.publish)
+            live = live_walks.get(walk)
+            if live and env.get("from") != "engine":
+                replay_places = kind == "walk.accept" and not live.routes
+                await live.handle(env)
+                if replay_places:
+                    # A shop may have updated hours before the walker joined.
+                    for prior in list(room.history):
+                        if prior["msg"].get("type") == "place.update":
+                            await live.place_update(prior["msg"].get("place"))
     except WebSocketDisconnect:
         pass
     finally:

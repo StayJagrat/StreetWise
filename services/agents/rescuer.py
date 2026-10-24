@@ -55,7 +55,7 @@ def build_rescuer():
         path.parent.mkdir(parents=True, exist_ok=True); path.write_text(json.dumps(packet, indent=2))
         ctx.logger.warning(f"handoff packet written: {path} (no emergency services contacted)")
         summary = (f"I did not hear back from you for {_dur(msg.minutes_overdue)}, so I prepared a handoff packet for your trusted contact (route, time, open places nearby): {path}. "
-                   "I have NOT contacted emergency services or anyone else. If you are in danger, call 911. If you are fine, reply **ok** or **stop walk**.")
+                   "I have NOT contacted emergency services or anyone else. If you need emergency help, call 911. If you are okay, reply **ok** or **stop walk**.")
         await ctx.send(sender, RescueDone(session=msg.session, user=msg.user, packet_path=str(path), summary=summary))
 
     return agent

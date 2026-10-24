@@ -13,7 +13,9 @@ import urllib.request
 ROOT = Path(__file__).resolve().parents[2]
 CACHE = ROOT / "data" / "cache"
 sys.path.insert(0, str(ROOT / "services" / "engine"))
-from streetwise_engine.world import World, is_open  # noqa: E402
+from streetwise_engine.world import World  # noqa: E402
+sys.path.insert(0, str(ROOT / "services" / "hours"))
+from hours_common import validate_osm_hours  # noqa: E402
 
 BASE = "https://agent.creao.ai"
 
@@ -40,8 +42,15 @@ def valid(d, osm_id):
     if not d or d.get("osm_id") != osm_id: return False
     oh = d.get("opening_hours")
     if oh is None: return True
-    try: return all(is_open(oh, day, m) in (True, False, None) for day in range(7) for m in range(0, 1440, 180))
-    except Exception: return False
+    ok, _ = validate_osm_hours(oh)
+    if not ok: return False
+    conf = d.get("confidence")
+    if not isinstance(conf, (int, float)) or not 0.6 <= conf <= 1: return False
+    sources = d.get("sources")
+    return isinstance(sources, list) and any(
+        isinstance(s, dict) and isinstance(s.get("url"), str) and s["url"].startswith(("https://", "http://"))
+        and isinstance(s.get("quote"), str) and s["quote"].strip() for s in sources
+    )
 
 
 def main():

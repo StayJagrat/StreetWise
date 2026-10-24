@@ -100,27 +100,44 @@ def metrics(W: World, ctx: Ctx, path):
 
 
 class Norm:
-    """Reference distribution: the same metrics on a fixed set of ordinary walks, at the same day and minute."""
+    """Reference distribution: the same metrics on ordinary walks in the same neighbourhood, at the same day and half hour.
+
+    The city is cut into 2 km cells; each cell gets its own reference set, so a walk is compared with typical walks around it
+    (downtown against downtown, the Sunset against the Sunset), never with the whole city."""
     KEYS = ("places_per_km", "help_mean", "gap_m", "tpk", "main", "transit")
+    FLOOR = dict(places_per_km=2.0, help_mean=0.10, gap_m=150.0, tpk=3.0, main=0.25, transit=0.25)   # smallest meaningful spread; stops a dead area from saturating at 100
+    CELL = 2000.0
+    N_REF = 20
 
     def __init__(self, lo, hi): self.lo, self.hi = lo, hi
-    def n(self, k, x): return clip((x - self.lo[k]) / max(self.hi[k] - self.lo[k], 1e-9))
+    def n(self, k, x): return clip((x - self.lo[k]) / max(self.hi[k] - self.lo[k], self.FLOOR.get(k, 1e-9)))
 
-    @staticmethod
-    def reference_paths(W: World, n=40, seed=3):
-        random.seed(seed); out = []
-        while len(out) < n:
-            a, b = random.sample(range(len(W.nodes)), 2); d = float(np.hypot(*(W.node_p[a] - W.node_p[b])))
-            if 900 < d < 2000: out.append(nx.astar_path(W.G, W.nodes[a], W.nodes[b], heuristic=lambda u, v: float(np.hypot(*(W.G.nodes[u]["p"] - W.G.nodes[v]["p"]))), weight="length"))
+    @classmethod
+    def cell_of(cls, xy): return (int(xy[0] // cls.CELL), int(xy[1] // cls.CELL))
+
+    @classmethod
+    def reference_paths(cls, W: World, cell, n=None, seed=3):
+        n = n or cls.N_REF; rng = random.Random(seed * 100003 + cell[0] * 1009 + cell[1])
+        cx, cy = (cell[0] + 0.5) * cls.CELL, (cell[1] + 0.5) * cls.CELL
+        near = np.where(np.hypot(W.node_p[:, 0] - cx, W.node_p[:, 1] - cy) <= cls.CELL * 0.9)[0]
+        if len(near) < 50: near = np.argsort(np.hypot(W.node_p[:, 0] - cx, W.node_p[:, 1] - cy))[:400]
+        out, tries = [], 0
+        h = lambda u, v: float(np.hypot(*(W.G.nodes[u]["p"] - W.G.nodes[v]["p"])))
+        while len(out) < n and tries < n * 40:
+            tries += 1; a, b = rng.sample(list(near), 2); d = float(np.hypot(*(W.node_p[a] - W.node_p[b])))
+            if 700 < d < 1800:
+                try: out.append(nx.astar_path(W.G, W.nodes[a], W.nodes[b], heuristic=h, weight="length"))
+                except nx.NetworkXNoPath: pass
         return out
 
     @classmethod
-    def build(cls, W: World, ctx: Ctx, refs):
-        f = CACHE / f"norm_{ctx.day}_{ctx.minute // 30}.json"
+    def build(cls, W: World, ctx: Ctx, cell):
+        f = CACHE / "norms" / f"norm_{cell[0]}_{cell[1]}_{ctx.day}_{ctx.minute // 30}.json"
         if f.exists(): d = json.loads(f.read_text()); return cls(d["lo"], d["hi"])
+        refs = cls.reference_paths(W, cell)
         ms = [metrics(W, Ctx(ctx.day, (ctx.minute // 30) * 30), p) for p in refs]; lo, hi = {}, {}
-        for k in cls.KEYS: v = np.array([m[k] for m in ms]); lo[k], hi[k] = float(np.percentile(v, 10)), float(np.percentile(v, 90))
-        f.write_text(json.dumps(dict(lo=lo, hi=hi))); return cls(lo, hi)
+        for k in cls.KEYS: v = np.array([m[k] for m in ms]) if ms else np.zeros(1); lo[k], hi[k] = float(np.percentile(v, 10)), float(np.percentile(v, 90))
+        f.parent.mkdir(exist_ok=True); f.write_text(json.dumps(dict(lo=lo, hi=hi, n=len(ms)))); return cls(lo, hi)
 
 
 def score(m, N: Norm):
