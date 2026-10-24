@@ -72,7 +72,10 @@ export default function Setup() {
           </select>
         </label>
 
-        <Button kind="primary" block onClick={() => { saveSettings(s); nav('/walk'); }}>Save · start walking</Button>
+        <Button kind="primary" block onClick={() => {
+          saveSettings(s);
+          nav('/plan');
+        }}>Save · plan a walk</Button>
       </main>
     </div>
   );

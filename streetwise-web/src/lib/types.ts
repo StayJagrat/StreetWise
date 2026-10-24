@@ -40,8 +40,29 @@ export interface RouteStats {
   minutes: number;
 }
 
+export interface RouteStep {
+  street: string;
+  maneuver: string;
+  at_m: number;
+  len_m: number;
+  ll: LngLat;
+}
+
+export interface RouteOption {
+  id: 'fast' | 'balanced' | 'best';
+  label: string;
+  coords: LngLat[];
+  steps: RouteStep[];
+  stats: RouteStats;
+  km: number;
+  placesOpen: number;
+  lightPct: number;
+  points: Record<string, number>;
+  weights: Record<string, number>;
+}
+
 export interface DemoData {
-  scenario: { label: string; area: string; segmentsScored: number };
+  scenario: { label: string; area: string; segmentsScored: number; departureMinute: number; day?: number };
   walker: { id: string; name: string };
   guardian: { name: string; initials: string; channel: string };
   start: { name: string; lngLat: LngLat };
@@ -53,6 +74,11 @@ export interface DemoData {
   places: Place[];
   stats: { streetwise: RouteStats; shortest: RouteStats };
   darknessDebt: { street: string; minutes: number }[];
+  routeSteps: { streetwise: RouteStep[]; shortest: RouteStep[] };
+  options?: RouteOption[];
+  recommended?: 'fast' | 'balanced' | 'best';
+  whatIf?: { placeId: string; passMinute: number; statsOpen: DemoData['stats'] } | null;
+  dataNote?: string;
 }
 
 export interface Thresholds {
@@ -65,7 +91,7 @@ export interface Thresholds {
 export type Msg =
   | { type: 'walk.plan'; plan: { routeId: string; stats: DemoData['stats']; reason: string; thresholds: Thresholds; guardian: string } }
   | { type: 'walk.reset' }
-  | { type: 'walk.accept'; choice: 'streetwise' | 'usual' }
+  | { type: 'walk.accept'; choice: 'streetwise' | 'usual'; guardian?: string; thresholds?: Thresholds; origin?: { lat: number; lon: number }; dest?: { lat: number; lon: number }; day?: number; minute?: number }
   | { type: 'walk.start'; replay: boolean }
   | { type: 'walk.position'; lngLat: LngLat; heading: number; speed: number; progress: number; replay: boolean }
   | { type: 'voice.say'; agent: AgentName; text: string }

@@ -71,7 +71,7 @@ export function reduce(s: WalkState, e: Envelope): WalkState {
     case 'walk.accept':
       return { ...s, choice: m.choice };
     case 'walk.start':
-      return { ...initialState(), plan: s.plan, choice: s.choice ?? 'streetwise', places: s.places, brightened: s.brightened, log: s.log, guardianJoined: s.guardianJoined, phase: 'walking', replay: m.replay, startedAt: ts, engineFrom: e.from, events: [{ ts, kind: 'start', label: 'Left BART' }] };
+      return { ...initialState(), plan: s.plan, choice: s.choice ?? 'streetwise', places: s.places, brightened: s.brightened, log: s.log, guardianJoined: s.guardianJoined, phase: 'walking', replay: m.replay, startedAt: ts, engineFrom: e.from, events: [{ ts, kind: 'start', label: 'Walk started' }] };
     case 'walk.position': {
       const last = s.trail[s.trail.length - 1];
       const moved = !last || Math.abs(last[0] - m.lngLat[0]) + Math.abs(last[1] - m.lngLat[1]) > 0.00003;
@@ -112,7 +112,7 @@ export function reduce(s: WalkState, e: Envelope): WalkState {
     case 'agent.log':
       return { ...s, log: push(s.log, { id: e.id, ts: m.at ?? ts, agent: m.agent, to: m.to, text: m.text, reason: m.reason }, 200) };
     case 'walk.end':
-      return { ...s, phase: 'arrived', summary: m.summary, checkin: undefined, events: push(s.events, { ts, kind: 'arrive', label: 'Home' }) };
+      return { ...s, phase: 'arrived', summary: m.summary, checkin: undefined, alert: undefined, events: push(s.events, { ts, kind: 'arrive', label: 'Arrived' }) };
     case 'audit.result':
       return { ...s, audit: { ranking: m.ranking, draft311: m.draft311, ts } };
     default:
@@ -159,21 +159,69 @@ export function useWalk(walkId: string, role: Role) {
 }
 
 // ---------------------------------------------------------------- demo data
-let dataPromise: Promise<DemoData> | null = null;
-export function loadDemoData(): Promise<DemoData> {
-  if (!dataPromise) dataPromise = fetch('/data/demo-route.json').then((r) => r.json());
-  return dataPromise;
+const dataPromises = new Map<string, Promise<DemoData>>();
+function demoKey(settings: Settings, destination?: { lat: number; lon: number; name: string }, live = false) {
+  return destination
+    ? `${destination.lat},${destination.lon},${destination.name}|${settings.origin?.lngLat.join(',') ?? ''}|${settings.depart?.day ?? ''}:${settings.depart?.minute ?? ''}`
+    : live ? 'live-default' : 'offline-default';
 }
-export function useDemoData(): DemoData | null {
-  const [d, setD] = useState<DemoData | null>(null);
+/** The planner already fetched this plan; hand it to the walk screen so it doesn't score the route twice. */
+export function primeDemoData(settings: Settings, data: DemoData) {
+  const d = settings.destination;
+  if (!d) return;
+  dataPromises.set(demoKey(settings, { lat: d.lngLat[1], lon: d.lngLat[0], name: d.name }), Promise.resolve(data));
+}
+export function loadDemoData(): Promise<DemoData> {
+  const query = new URLSearchParams(location.search);
+  const live = import.meta.env.VITE_ENGINE === 'off' || query.get('engine') === 'off';
+  const settings = loadSettings();
+  const destinationParam = query.get('destination');
+  const requestedDestination = destinationParam ? (() => {
+    const [lat, lon] = destinationParam.split(',').map(Number);
+    const name = query.get('destinationName') ?? 'Destination';
+    return Number.isFinite(lat) && Number.isFinite(lon) ? { lat, lon, name } : undefined;
+  })() : undefined;
+  const saved = settings.destination;
+  const destination = requestedDestination ?? (saved ? { lat: saved.lngLat[1], lon: saved.lngLat[0], name: saved.name } : undefined);
+  const key = demoKey(settings, destination ? { lat: destination.lat, lon: destination.lon, name: destination.name } : undefined, live);
+  if (!dataPromises.has(key)) {
+    const read = (url: string) => fetch(url).then((r) => {
+      if (!r.ok) throw new Error(`Demo data request failed: ${r.status}`);
+      return r.json() as Promise<DemoData>;
+    });
+    if (destination) {
+      const params = new URLSearchParams({ lat: String(destination.lat), lon: String(destination.lon), name: destination.name });
+      if (settings.origin) {
+        params.set('olat', String(settings.origin.lngLat[1]));
+        params.set('olon', String(settings.origin.lngLat[0]));
+        params.set('oname', settings.origin.name);
+      }
+      if (settings.depart) {
+        params.set('day', String(settings.depart.day));
+        params.set('minute', String(settings.depart.minute));
+      }
+      dataPromises.set(key, read(`/api/route-demo?${params}`));
+    } else {
+      dataPromises.set(key, live ? read('/api/demo').catch(() => read('/data/demo-route.json')) : read('/data/demo-route.json'));
+    }
+  }
+  const promise = dataPromises.get(key)!;
+  promise.catch(() => { if (dataPromises.get(key) === promise) dataPromises.delete(key); });
+  return promise;
+}
+export function useDemoData(): { data: DemoData | null; error: string | null } {
+  const [result, setResult] = useState<{ data: DemoData | null; error: string | null }>({ data: null, error: null });
   useEffect(() => {
     let alive = true;
-    loadDemoData().then((x) => alive && setD(x));
+    loadDemoData().then(
+      (data) => alive && setResult({ data, error: null }),
+      () => alive && setResult({ data: null, error: 'The selected destination route could not be loaded. Pick another start or destination inside San Francisco, or check that the API is running.' }),
+    );
     return () => {
       alive = false;
     };
   }, []);
-  return d;
+  return result;
 }
 
 export function mergedPlaces(data: DemoData, s: WalkState): Place[] {
@@ -186,6 +234,9 @@ export interface Settings {
   thresholds: Thresholds;
   timeScale: number; // demo replay speed (1 = real time)
   walkerName: string;
+  destination?: { name: string; lngLat: [number, number] };
+  origin?: { name: string; lngLat: [number, number] };
+  depart?: { day: number; minute: number; label: string };
 }
 const DEFAULTS: Settings = {
   guardianName: 'Maya Chen',
@@ -208,6 +259,8 @@ export function saveSettings(s: Settings) {
   } catch {
     /* storage blocked */
   }
+  dataPromises.clear();
 }
 
-export const walkIdFromUrl = (fallback = 'demo') => new URLSearchParams(location.search).get('walk') || fallback;
+export const isGatewayMode = () => import.meta.env.VITE_ENGINE === 'off' || new URLSearchParams(location.search).get('engine') === 'off';
+export const walkIdFromUrl = (fallback?: string) => new URLSearchParams(location.search).get('walk') || fallback || (isGatewayMode() ? 'live-demo' : 'demo');

@@ -1,4 +1,4 @@
-import { along, cumulative, lineLength, project, turns, type Turn } from './geo';
+import { along, cumulative, lineLength, project, turnsFromSteps, type Turn } from './geo';
 import { AGENT_LABEL, clock, openSpoken } from './format';
 import type { Room } from './transport';
 import type { AgentName, DemoData, Envelope, LngLat, Msg, Place } from './types';
@@ -8,15 +8,10 @@ import type { Settings } from './store';
 // gateway isn't driving the walk (Demo Mode / Deterministic mode in the build doc).
 // It speaks the same message types the real agents send, so every screen behaves
 // identically in both modes. It replays the route as GPS (badged "Demo · GPS replay")
-// and injects one stop on the dim stretch of Howard St.
+// and injects one stop on the engine-selected stretch.
 
 const WALK_MS = 1.35; // walking speed, m/s
 const TICK = 500;
-
-export const STREETS: Record<'streetwise' | 'usual', string[]> = {
-  streetwise: ['NEW MONTGOMERY ST', 'MISSION ST', '4TH ST', 'HOWARD ST', '5TH ST'],
-  usual: ['NEW MONTGOMERY ST', 'HOWARD ST', '5TH ST'],
-};
 
 export class DemoEngine {
   private room: Room;
@@ -34,7 +29,7 @@ export class DemoEngine {
   private stopAt = Infinity;
   private state: 'idle' | 'walking' | 'stopped' | 'asking' | 'escalated' | 'done' = 'idle';
   private places: Place[];
-  private cafeBoost = 0;
+  private stats: DemoData['stats'];
   private mine = new Set<string>();
   // If another engine (another tab/device) plans or starts the walk, this one stands down.
   private passive = false;
@@ -45,6 +40,7 @@ export class DemoEngine {
     this.data = data;
     this.settings = settings;
     this.places = data.places.map((p) => ({ ...p }));
+    this.stats = structuredClone(data.stats);
     this.unsub = room.subscribe((e) => this.onMessage(e));
   }
 
@@ -79,22 +75,21 @@ export class DemoEngine {
     this.state = 'idle';
     this.running = false;
     this.passive = false;
+    this.stats = structuredClone(this.data.stats);
     const d = this.data;
     const overnight = new Date();
     overnight.setHours(2, 0, 4, 0);
-    this.log('auditor', `Re-scored ${d.scenario.segmentsScored.toLocaleString()} street segments overnight. 14 changed since yesterday.`, 'New SF 311 streetlight reports on Howard St.', 'Scout', overnight.getTime());
-    this.log('scout', 'Who is open near Mission & 4th after 11 PM?', 'Checking before offering a route.', 'Place agents');
+    this.log('auditor', `Cached conditions cover ${d.scenario.segmentsScored.toLocaleString()} street segments.`, 'OSM streets, listed place hours, and SF 311 streetlight records.', 'Scout', overnight.getTime());
+    this.log('scout', `Which places are listed open along ${d.start.name} → ${d.end.name}?`, 'Checking the cached hours at each arrival minute.', 'Place agents');
     const open = this.places.filter((p) => p.openUntil !== 'closed');
     this.later(500, () => {
-      for (const p of open) this.log('scout', `Place agent · ${p.name}: ${p.openUntil === '24h' ? 'open 24h' : p.openUntil === 'lobby' ? 'lobby open' : `open until ${clock(p.openUntil)}`}${p.safeHaven ? ', safe haven' : ''}.`, p.simulated ? 'Simulated place agent.' : 'Live place agent run by the shopkeeper.');
-      this.sendPlan('This way is 2 min longer, but only 44 m has fewer lights instead of 115 m. Café Mia is open till 1.');
+      for (const p of open) this.log('scout', `Listed hours · ${p.name}: ${p.openUntil === '24h' ? 'open 24h' : p.openUntil === 'lobby' ? 'lobby open' : `open until ${clock(p.openUntil)}`}.`, 'Cached place hours; shopkeeper interaction is simulated.');
+      this.sendPlan(`The route scores ${d.stats.streetwise.score} versus ${d.stats.shortest.score}. Its longest stretch without a listed open place or help point is ${d.stats.streetwise.longestEmptyM} m versus ${d.stats.shortest.longestEmptyM} m. Conditions, not a safety rating.`);
     });
   }
 
   private sendPlan(reason: string) {
-    const stats = structuredClone(this.data.stats);
-    stats.streetwise.score += this.cafeBoost;
-    this.send({ type: 'walk.plan', plan: { routeId: 'route-1', stats, reason, thresholds: this.settings.thresholds, guardian: this.settings.guardianName } });
+    this.send({ type: 'walk.plan', plan: { routeId: 'route-1', stats: structuredClone(this.stats), reason, thresholds: this.settings.thresholds, guardian: this.settings.guardianName } });
   }
 
   start(choice: 'streetwise' | 'usual') {
@@ -104,7 +99,7 @@ export class DemoEngine {
     this.line = choice === 'streetwise' ? this.data.route : this.data.shortest;
     this.cum = cumulative(this.line);
     this.total = lineLength(this.line);
-    this.turnsList = turns(this.line, STREETS[choice]);
+    this.turnsList = turnsFromSteps(this.data.routeSteps[choice === 'usual' ? 'shortest' : 'streetwise'], this.total);
     this.progress = 0;
     this.said.clear();
     const stop = project(this.line, this.data.stopAt, this.cum);
@@ -112,9 +107,10 @@ export class DemoEngine {
     this.state = 'walking';
     this.send({ type: 'walk.accept', choice });
     this.send({ type: 'walk.start', replay: true });
-    this.log('scout', `WalkPlan sent: ${STREETS[choice].map(title).join(' → ')}. Score ${this.data.stats.streetwise.score + this.cafeBoost} vs ${this.data.stats.shortest.score}.`, `${this.settings.walkerName} said "${choice === 'streetwise' ? 'go this way' : 'keep usual'}".`, 'Watcher');
+    this.log('scout', `WalkPlan sent: ${choice === 'streetwise' ? 'Streetwise route' : 'shortest route'}. Score ${this.stats.streetwise.score} vs ${this.stats.shortest.score}.`, `${this.settings.walkerName} chose this route.`, 'Watcher');
     const first = this.turnsList[0];
-    this.say('scout', `Okay, I'm walking with you. Head down ${title(STREETS[choice][0])}${first && first.direction !== 'arrive' ? `, then ${first.direction} on ${title(first.street)}` : ''}.`);
+    const firstStreet = this.data.routeSteps[choice === 'usual' ? 'shortest' : 'streetwise'].find((s) => s.street !== 'the path')?.street ?? 'the walking path';
+    this.say('scout', `Okay, I'm walking with you. Head toward ${firstStreet}${first && first.direction !== 'arrive' ? `, then ${first.direction} on ${first.street}` : ''}.`);
     this.timer = window.setInterval(() => this.tick(), TICK);
     this.tick();
   }
@@ -176,12 +172,12 @@ export class DemoEngine {
   private onStopped() {
     const t = this.settings.thresholds;
     const dim = this.data.dimStretches.find((d) => d.onRoute);
-    this.log('watcher', `Stopped on ${dim?.name ?? 'a dim stretch'} (score ${dim?.score ?? '—'}). Waiting ${t.stopSeconds} s before asking.`, 'Low-score segment and no open door within 50 m.');
+    this.log('watcher', `Stopped on ${dim?.name ?? 'a stretch with fewer open places'} (score ${dim?.score ?? '—'}). Waiting ${t.stopSeconds} s before asking.`, 'A stretch without a listed open place or help point.');
     this.later(this.scaled(t.stopSeconds), () => {
       if (this.state !== 'stopped') return;
       this.state = 'asking';
       const deadline = Date.now() + this.scaled(t.replySeconds);
-      this.send({ type: 'checkin.ask', agent: 'watcher', text: 'You stopped. All good?', reason: `You've been still for ${t.stopSeconds} s on a stretch of Howard with fewer working lights.`, windowSec: t.replySeconds, deadline });
+      this.send({ type: 'checkin.ask', agent: 'watcher', text: 'You stopped. All good?', reason: `You've been still for ${t.stopSeconds} s on ${dim?.name ?? 'the route'}.`, windowSec: t.replySeconds, deadline });
       this.say('watcher', 'You stopped. All good?');
       this.log('watcher', 'Asked aloud: "You stopped. All good?"', `Still for ${t.stopSeconds} s on a low-score segment.`, this.settings.walkerName);
       this.later(this.scaled(t.replySeconds) + 50, () => {
@@ -193,7 +189,7 @@ export class DemoEngine {
   private escalate(reason: string) {
     this.state = 'escalated';
     const p = along(this.line, this.progress, this.cum);
-    const where = 'Howard St, between 4th & 5th';
+    const where = this.data.dimStretches.find((d) => d.onRoute)?.name ?? this.data.end.name;
     this.log('watcher', 'Escalating with last position and trace.', `${reason}. Standing order: guardian first.`, 'Rescuer');
     this.send({ type: 'escalate', reason, lngLat: p.lngLat });
     this.send({ type: 'guardian.alert', reason, lngLat: p.lngLat, where });
@@ -214,9 +210,9 @@ export class DemoEngine {
     this.state = 'done';
     this.running = false;
     window.clearInterval(this.timer);
-    this.say('reporter', `You're home. Night, ${this.settings.walkerName}.`);
-    this.send({ type: 'walk.end', outcome: 'arrived', summary: 'Lamp out on Howard St logged, dark stretch flagged, Café Mia confirmed as a safe haven. Draft 311 report ready for review — nothing sent.' });
-    this.log('reporter', 'Evidence filed: 1 lamp out, 1 dark stretch, 1 haven confirmed. Draft 311 report ready for review.', 'Walk ended. 311 reports stay drafts.', 'Night Auditor');
+    this.say('reporter', `You've arrived at ${this.data.end.name}, ${this.settings.walkerName}.`);
+    this.send({ type: 'walk.end', outcome: 'arrived', summary: `Arrived near ${this.data.end.name}. Route conditions recorded; nothing was submitted to the city.` });
+    this.log('reporter', 'Walk ended. Route conditions recorded; any 311 report remains a draft.', 'No report was submitted.', 'Night Auditor');
   }
 
   private onMessage(e: Envelope) {
@@ -259,27 +255,29 @@ export class DemoEngine {
     if (!p) return;
     Object.assign(p, u);
     const open = u.openUntil !== 'closed';
-    this.log('scout', `Place agent · ${p.name}: ${open ? `staying open until ${clock(u.openUntil)}` : 'closed for the night'}${u.safeHaven ? ', safe haven' : ''}${u.frontLight ? ', front light on' : ''}.`, p.simulated ? 'Simulated place agent.' : 'Shopkeeper toggled it on their phone.');
-    if (p.id === 'cafe-mia') {
-      const before = 58 + 0;
-      const after = open ? 66 : 49;
-      this.cafeBoost = open ? 3 : -3;
-      this.log('scout', `Re-scored Mission St · 3rd → 4th: ${before} → ${after}. ${open ? 'Route keeps passing the door.' : 'Route still OK; fewer open doors.'}`, 'Open places count for 30% of the score.');
-      if (this.state === 'idle') this.sendPlan(open ? `Café Mia just said it's staying open till ${clock(u.openUntil)}, so the Mission St block got brighter.` : 'Café Mia closed, so the Mission St block has one less open door.');
-      else if (this.state === 'walking') {
+    this.log('scout', `Place update · ${p.name}: ${open ? `staying open until ${clock(u.openUntil)}` : 'closed for the night'}${u.frontLight ? ', front light on' : ''}.`, p.simulated ? 'Simulated shopkeeper declaration.' : 'Shopkeeper declaration.');
+    const scenario = this.data.whatIf;
+    if (scenario && p.id === scenario.placeId) {
+      const [hour, minute] = u.openUntil.split(':').map(Number);
+      const until = u.openUntil === '24h' ? Infinity : Number.isFinite(hour) && Number.isFinite(minute) ? hour * 60 + minute + (hour < 12 ? 1440 : 0) : -1;
+      const countsOpen = open && until > scenario.passMinute;
+      this.stats = structuredClone(countsOpen ? scenario.statsOpen : this.data.stats);
+      this.log('scout', `Engine replay re-scored the fixed routes: ${this.stats.streetwise.score} vs ${this.stats.shortest.score}.`, `Cached Python engine result for ${p.name} ${countsOpen ? 'open' : 'closed'} at the arrival minute.`);
+      if (this.state === 'idle' || this.state === 'walking') this.sendPlan(`${p.name} is ${countsOpen ? 'listed open' : 'not listed open'} when the walker passes. The fixed routes score ${this.stats.streetwise.score} versus ${this.stats.shortest.score}.`);
+      if (this.state === 'walking') {
         const pr = project(this.line, p.lngLat, this.cum);
-        if (pr.meters > this.progress) this.say('scout', open ? `Good news: ${p.name} is staying open till ${clock(u.openUntil)}. That block just got brighter.` : `${p.name} just closed. I'll keep you on the lit side.`);
+        if (pr.meters > this.progress) this.say('scout', `${p.name} has updated its hours. I have refreshed the route conditions.`);
       }
     }
   }
 
   private runAudit() {
-    this.log('auditor', 'Running overnight audit: re-pulling hours and 311 reports, re-scoring the area.', 'Requested from the control room.');
+    this.log('auditor', 'Running the cached overnight audit.', 'Requested from the control room.');
     this.later(1400, () => {
       const ranking = this.data.darknessDebt;
       const top = ranking[0];
-      this.send({ type: 'audit.result', ranking, draft311: `DRAFT — not submitted. Streetlight outages along ${top.street}. Walkers spent ${top.minutes} walker-minutes on this stretch last night. Cites the open SF 311 streetlight reports on this block (case IDs from DataSF).` });
-      this.log('auditor', `Ranked streets by walker-minutes in the dark. Top: ${top.street} (${top.minutes} min). Draft 311 report prepared.`, 'Nightly job. Reports stay drafts for human review.', 'Reporter');
+      this.send({ type: 'audit.result', ranking, draft311: `DRAFT — not submitted. Review streetlight conditions on ${top.street}. The model estimates ${top.minutes} walker-minutes on lower-light segments in a simulated overnight sample. Confirm conditions and report identifiers before filing.` });
+      this.log('auditor', `Ranked modeled walker-minutes on lower-light streets. Top: ${top.street} (${top.minutes} min). Draft 311 text prepared.`, 'Modeled trips, not observed foot traffic. Report remains a draft.', 'Reporter');
     });
   }
 

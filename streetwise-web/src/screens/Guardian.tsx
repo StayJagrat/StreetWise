@@ -32,7 +32,7 @@ function beep() {
 
 export default function Guardian() {
   const { walk = 'demo' } = useParams();
-  const data = useDemoData();
+  const { data, error } = useDemoData();
   const settings = useMemo(loadSettings, []);
   const { state, send, status } = useWalk(walk, 'guardian');
   const [sound, setSound] = useState(false);
@@ -58,7 +58,7 @@ export default function Guardian() {
     }
   }, [state.alert]);
 
-  if (!data) return <div className="screen" data-theme="day" />;
+  if (!data) return <div className="screen" data-theme="day" role={error ? 'alert' : undefined} style={{ padding: 24 }}>{error ?? 'Loading route…'}</div>;
   const places = mergedPlaces(data, state);
   const active = state.phase !== 'preview' && state.phase !== 'arrived';
   const lastCheck = state.lastReply?.reply === 'fine' ? state.lastReply.ts : state.startedAt;
@@ -107,7 +107,7 @@ export default function Guardian() {
         )}
         {active && (
           <>
-            <h1 className="t-display">{state.phase === 'escalated' ? `${walker} isn't answering` : `${walker} is walking home`}</h1>
+            <h1 className="t-display">{state.phase === 'escalated' ? `${walker} isn't answering` : `${walker} is on the walk`}</h1>
             <p className="muted" style={{ margin: 0 }}>
               {remaining ? `${remaining} min away` : 'On the way'} · {lastCheck ? `checked in ${Math.max(0, Math.round((now - lastCheck) / 60000))} min ago` : 'just left'}
             </p>
@@ -115,7 +115,7 @@ export default function Guardian() {
               <div className="g-ack"><Icon name="check" size={18} /> {state.lastReply?.reply === 'fine' && state.lastReply.ts > state.alert.ts ? `${walker} said they're fine.` : `You're on it. ${walker} can see that.`}</div>
             )}
             <div className="facts">
-              <div><span>Route</span><strong>{state.choice === 'usual' ? 'Usual way (Howard St)' : 'Via Mission & 4th St'}</strong></div>
+              <div><span>Route</span><strong>{state.choice === 'usual' ? 'Shortest route' : 'Streetwise route'}</strong></div>
               <div><span>Last check-in</span><strong>{state.lastReply?.reply === 'fine' ? `${timeOf(state.lastReply.ts)} · "I'm fine"` : 'None needed yet'}</strong></div>
               <div><span>Arrives</span><strong>{data.end.name}{remaining ? ` · ${timeOf(now + remaining * 60000)}` : ''}</strong></div>
             </div>
@@ -125,7 +125,7 @@ export default function Guardian() {
         )}
         {state.phase === 'arrived' && (
           <>
-            <h1 className="t-display">{walker} is home</h1>
+            <h1 className="t-display">{walker} has arrived</h1>
             <p className="muted" style={{ margin: 0 }}>The walk ended and location sharing stopped. Thanks for being there.</p>
           </>
         )}
@@ -145,7 +145,7 @@ export default function Guardian() {
           <a className="g-alert__call" href="tel:"><Icon name="phone" size={22} /> Call {walker}</a>
           <button type="button" className="g-alert__ack" onClick={() => send({ type: 'guardian.ack', by: me })}>I'm on it — clear the alert</button>
           <button type="button" className="g-alert__link" onClick={() => setDetails(true)}>See details (position, route, time, reason)</button>
-          <p className="g-alert__foot">Streetwise does not call 911. If you think {walker} is in danger, call 911 yourself.</p>
+          <p className="g-alert__foot">Streetwise does not call 911. If you need emergency help, call 911 yourself.</p>
         </div>
       )}
 

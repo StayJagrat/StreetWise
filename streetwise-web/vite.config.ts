@@ -2,7 +2,7 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 
-// The dev relay (npm run relay) listens on 8787. Proxying it through Vite means
+// The FastAPI gateway listens on 8000. Proxying it through Vite means
 // one HTTPS tunnel (Cloudflare / ngrok) serves both the app and the realtime room,
 // so a judge's phone that scans the QR code reaches both.
 export default defineConfig({
@@ -19,7 +19,7 @@ export default defineConfig({
         background_color: '#10141C',
         display: 'standalone',
         orientation: 'portrait',
-        start_url: '/walk',
+        start_url: '/plan',
         icons: [
           { src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' },
           { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png' },
@@ -32,13 +32,19 @@ export default defineConfig({
         navigateFallbackDenylist: [/^\/ws/],
         runtimeCaching: [
           {
-            // Map tiles, fonts and sprites: cache what the demo corridor touched,
-            // so a flaky venue network doesn't blank the map.
-            urlPattern: /^https:\/\/tiles\.openfreemap\.org\/.*/,
+            urlPattern: /\/tiles\/.*\.pmtiles$/,
             handler: 'CacheFirst',
             options: {
-              cacheName: 'map-tiles',
-              expiration: { maxEntries: 2000, maxAgeSeconds: 60 * 60 * 24 * 14 },
+              cacheName: 'basemap-tiles',
+              rangeRequests: true,
+              cacheableResponse: { statuses: [0, 200, 206] },
+            },
+          },
+          {
+            urlPattern: /\/fonts\/.*\.pbf$/,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'map-fonts',
               cacheableResponse: { statuses: [0, 200] },
             },
           },
@@ -49,12 +55,14 @@ export default defineConfig({
   server: {
     host: true,
     proxy: {
-      '/ws': { target: 'ws://localhost:8787', ws: true },
+      '/ws': { target: 'ws://127.0.0.1:8000', ws: true },
+      '/api': { target: 'http://127.0.0.1:8000' },
     },
   },
   preview: {
     proxy: {
-      '/ws': { target: 'ws://localhost:8787', ws: true },
+      '/ws': { target: 'ws://127.0.0.1:8000', ws: true },
+      '/api': { target: 'http://127.0.0.1:8000' },
     },
   },
 });
