@@ -1,5 +1,7 @@
 import { useEffect, useRef } from 'react';
-import maplibregl, { type LngLatBoundsLike, type Map as MLMap } from 'maplibre-gl';
+import * as maplibregl from 'maplibre-gl';
+import type * as GeoJSON from 'geojson';
+import { type LngLatBoundsLike, type Map as MLMap } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { buildStyle, UI_COLORS } from '../lib/mapStyle';
 import { ensurePmtiles } from './MapView';
@@ -55,7 +57,7 @@ export default function PickerMap(p: Props) {
       m.addLayer({ id: 'best-casing', type: 'line', source: 'best', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': colors.bg, 'line-width': 12 } });
       m.addLayer({ id: 'best', type: 'line', source: 'best', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': colors.route, 'line-width': 6 } });
       ready.current = true;
-      m.fire('plan-ready');
+      m.fire('plan-ready' as never);
     });
     m.on('click', (ev) => tap.current([ev.lngLat.lng, ev.lngLat.lat]));
     map.current = m;

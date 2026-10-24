@@ -159,7 +159,7 @@ def _option(engine: Engine, route: dict, depart: int) -> dict:
 
 
 def build_route_data(engine: Engine, lat: float, lon: float, name: str, origin: tuple[float, float] | None = None, origin_name: str | None = None,
-                     day: int = DAY, depart: int = DEPART) -> dict:
+                     day: int = DAY, depart: int = DEPART, session: str = SESSION, routed: dict | None = None) -> dict:
     """Build the PWA contract for any two points the street graph covers (the whole city), at any departure time."""
     name = name.strip()[:100]
     if not name:
@@ -179,12 +179,13 @@ def build_route_data(engine: Engine, lat: float, lon: float, name: str, origin: 
             raise ValueError("The destination is outside the mapped part of San Francisco. Pick a point inside the city.")
         if origin_node == destination_node:
             raise ValueError("Start and destination are the same place. Pick a different destination.")
-        engine.clear(SESSION)
+        if routed is None:
+            engine.clear(session)
         try:
-            result = engine.route(SESSION, origin, destination, day, depart)
+            result = routed or engine.route(session, origin, destination, day, depart)
             fastest = next(r for r in result["routes"] if r["id"] == "fast")
             best = next((r for r in result["routes"] if r["id"] == "best"), fastest)
-            suggested = engine.suggest_declarations(SESSION, best, day, depart)
+            suggested = engine.suggest_declarations(session, best, day, depart)
             shop = suggested[0] if suggested else None
             named = [p for p in best["shops"] if p["name"] and p["cat"] in {"cafe", "restaurant", "bar", "pub", "pharmacy", "convenience"}]
             selected = []
@@ -197,14 +198,15 @@ def build_route_data(engine: Engine, lat: float, lon: float, name: str, origin: 
             if shop:
                 closed = {"id": shop["id"], "name": shop["name"], "cat": shop["cat"], "ll": shop["ll"], "hours": shop["hours"], "d": shop["at"]}
                 places.append({**_place(engine, closed, day, depart), "openUntil": "closed"})
-                engine.declare(SESSION, shop["id"], depart + 150, day, depart)
-                ctx = engine.ctx(SESSION, day, depart)
+                saved_overrides = dict(engine.sessions.get(session, Ctx(day, depart)).overrides)
+                engine.declare(session, shop["id"], depart + 150, day, depart)
+                ctx = engine.ctx(session, day, depart)
                 what_if = {
                     "placeId": shop["id"],
                     "passMinute": depart + round(shop["at"] / WALK_SPEED / 60),
                     "statsOpen": {"streetwise": _fixed_route_stats(engine, best, ctx), "shortest": _fixed_route_stats(engine, fastest, ctx)},
                 }
-                engine.clear(SESSION)
+                engine.sessions[session] = Ctx(day, depart, saved_overrides)
             best_gap = best["gap"]["range"] or [0, best["km"] * 500]
             cumulative = _cumulative(engine, best["coords"])
             stop = _point_at(best["coords"], cumulative, sum(best_gap) / 2)
@@ -229,4 +231,5 @@ def build_route_data(engine: Engine, lat: float, lon: float, name: str, origin: 
                 "dataNote": f"Scores compare this walk with typical walks in the same neighbourhood at the same hour. Places without listed hours count as closed. The destination is snapped to the nearest mapped street, {destination_snap_m} m away. Darkness debt is modeled walker-minutes, not observed foot traffic.",
             }
         finally:
-            engine.clear(SESSION)
+            if routed is None:
+                engine.clear(session)

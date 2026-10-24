@@ -89,21 +89,34 @@ export interface Thresholds {
 
 // ---------------------------------------------------------------- messages
 export type Msg =
-  | { type: 'walk.plan'; plan: { routeId: string; stats: DemoData['stats']; reason: string; thresholds: Thresholds; guardian: string } }
+  | { type: 'gateway.error'; message: string }
+  | { type: 'walk.plan'; plan: { routeId: string; stats: DemoData['stats']; reason: string; thresholds: Thresholds; guardian: string; version?: number; data?: DemoData } }
   | { type: 'walk.reset' }
   | { type: 'walk.accept'; choice: 'streetwise' | 'usual'; guardian?: string; thresholds?: Thresholds; origin?: { lat: number; lon: number }; dest?: { lat: number; lon: number }; day?: number; minute?: number }
-  | { type: 'walk.start'; replay: boolean }
-  | { type: 'walk.position'; lngLat: LngLat; heading: number; speed: number; progress: number; replay: boolean }
+  | { type: 'walk.start'; replay: boolean; timeScale?: number }
+  | { type: 'walk.position'; lngLat: LngLat; heading: number; speed: number; progress: number; replay: boolean; fixTime?: number; accuracy?: number }
   | { type: 'voice.say'; agent: AgentName; text: string }
-  | { type: 'checkin.ask'; agent: 'watcher'; text: string; reason: string; windowSec: number; deadline: number }
-  | { type: 'checkin.reply'; reply: 'fine' | 'help'; via: 'voice' | 'tap' }
+  | { type: 'checkin.ask'; agent: 'watcher'; incidentId?: string; text: string; reason: string; windowSec: number; deadline: number }
+  | { type: 'checkin.reply'; reply: 'fine' | 'help'; via: 'voice' | 'tap'; incidentId?: string }
   | { type: 'escalate'; reason: string; lngLat: LngLat }
-  | { type: 'guardian.alert'; reason: string; lngLat: LngLat; where: string }
-  | { type: 'guardian.ack'; by: string }
+  | { type: 'guardian.alert'; incidentId?: string; reason: string; lngLat: LngLat; where: string }
+  | { type: 'guardian.ack'; incidentId?: string; by: string }
   | { type: 'guardian.join'; name: string }
   | { type: 'place.update'; place: Pick<Place, 'id' | 'openUntil' | 'safeHaven' | 'frontLight'> }
   | { type: 'agent.log'; agent: AgentName; to?: string; text: string; reason: string; at?: number }
   | { type: 'walk.end'; outcome: 'arrived' | 'ended' | 'incident'; summary: string }
+  | { type: 'session.info'; mode: 'demo' | 'live'; profile: { walkerName: string; guardianName: string; walkerPhone?: string } }
+  | { type: 'tracking.health'; status: string; message: string; accuracy?: number; fixTime?: number }
+  | { type: 'tracking.visibility'; visible: boolean }
+  | { type: 'walk.replan'; resumeDestination?: boolean }
+  | { type: 'incident.resolved'; by: string; reason: string }
+  | { type: 'help.request' }
+  | { type: 'help.respond'; requestId: string; accepted: boolean }
+  | { type: 'help.status'; id: string; status: 'waiting' | 'accepted' | 'unavailable' | 'resumed'; message: string; place?: Place; expires?: number }
+  | { type: 'demo.action'; action: 'pause' | 'resume' | 'checkin' | 'finish' }
+  | { type: 'observation.add'; kind: 'lighting' | 'blocked_path' | 'closed_place'; note?: string }
+  | { type: 'observation.saved'; observation: { id: string; kind: string; note: string; at: number; status: string; usedForScore: boolean } }
+  | { type: 'report.ready'; text: string; observations: unknown[] }
   | { type: 'audit.run' }
   | { type: 'audit.result'; ranking: { street: string; minutes: number }[]; draft311: string };
 

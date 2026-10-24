@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Button, Icon, Initials, Mascot } from '../components/ui';
 import { loadSettings, saveSettings } from '../lib/store';
 import type { AgentName } from '../lib/types';
@@ -22,7 +22,8 @@ export default function Setup() {
 
   return (
     <div className="screen screen--scroll setup" data-theme="night">
-      <main className="setup__body">
+      <main className="setup__body" id="main-content">
+        <Link to="/">Back to Streetwise</Link>
         <h1 className="t-display" style={{ fontSize: 32, lineHeight: '36px' }}>Before your first walk</h1>
 
         <section className="card setup__crew">
@@ -38,6 +39,8 @@ export default function Setup() {
           <p className="setup__crew-line">{CREW.find((c) => c[0] === picked)?.[1]} {CREW.find((c) => c[0] === picked)?.[2]}.</p>
         </section>
 
+        <label className="setup__field">Your name<input className="setup__input" maxLength={80} value={s.walkerName} onChange={e => set({ walkerName: e.target.value })} /></label>
+        <label className="setup__field">Phone number <span className="t-caption">Optional; shared with your guardian</span><input type="tel" className="setup__input" maxLength={30} value={s.walkerPhone ?? ''} onChange={e => set({ walkerPhone: e.target.value })} placeholder="+1 ..." /></label>
         <section className="card setup__guardian">
           <Initials text={s.guardianName[0] ?? 'G'} size={42} />
           <div style={{ flex: 1 }}>
@@ -61,10 +64,15 @@ export default function Setup() {
           <Icon name="phoneOff" size={24} />
           <div>
             <div className="t-headline" style={{ fontSize: 15 }}>Streetwise never calls 911 for you.</div>
-            <div className="t-caption" style={{ fontSize: 12 }}>Mic is on only during a walk. Audio isn't stored.</div>
+            <div className="t-caption" style={{ fontSize: 12 }}>Voice is optional. Keep the app visible. Streetwise does not save recordings.</div>
           </div>
         </section>
 
+        <fieldset className="setup__modes"><legend>Choose how to try Streetwise</legend>
+          <label><input type="radio" name="mode" checked={(s.mode ?? 'demo') === 'demo'} onChange={() => set({ mode: 'demo' })} /><span>Demo replay<small>A cached SF walk. No device location needed.</small></span></label>
+          <label><input type="radio" name="mode" checked={s.mode === 'live'} onChange={() => set({ mode: 'live' })} /><span>Device GPS<small>SF only. Requires location permission and a visible app.</small></span></label>
+        </fieldset>
+        <label className="setup__consent"><input type="checkbox" checked={s.consent ?? false} onChange={e => set({ consent: e.target.checked })} /><span>I agree to share my position with the guardian I invite during this walk. My link expires after two hours. <Link to="/privacy">Privacy and limits</Link></span></label>
         <label className="setup__demo t-caption">
           Demo replay speed
           <select value={s.timeScale} onChange={(e) => set({ timeScale: Number(e.target.value) })}>
@@ -72,7 +80,7 @@ export default function Setup() {
           </select>
         </label>
 
-        <Button kind="primary" block onClick={() => {
+        <Button kind="primary" block disabled={!s.walkerName.trim() || !s.guardianName.trim() || !s.consent} onClick={() => {
           saveSettings(s);
           nav('/plan');
         }}>Save · plan a walk</Button>

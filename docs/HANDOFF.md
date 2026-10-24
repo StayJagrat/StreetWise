@@ -1,3 +1,15 @@
+# JP completion update · October 24, 2026
+
+The user's current instruction overrides the earlier branch/PR workflow below: **all current changes stay on JP; do not push or merge main.** Main at `cec4172` was integrated into JP at `21373b9`. The existing Figma frontend is preserved.
+
+The current app has a connected FastAPI gateway, private role capabilities, local durable state plus Supabase snapshots, restorable server deadlines, route geometry/turn updates, simulated assistance requests, foreground GPS/replay, browser voice and verified Claude answers. Welcome, account/provider readiness, privacy, install/offline assets and responsive finishing are added. Cartesia is out of scope at the user's request.
+
+Read [WORKFLOW.md](WORKFLOW.md) for the current workflow, configuration boundaries and demo steps, and [SUPABASE.md](SUPABASE.md) for the current `pwa_rooms` adapter. The user chose guest entry and deferred Google OAuth. External Agentverse/business deployment still requires its service configuration. The historical handoff below describes the team's earlier state.
+
+The remote main advanced independently to `aa74dc6` (live-backend merge) during JP verification. That later backend rewrite is not merged into this tested JP implementation. No push or edit to main was made here; reconcile the two implementations deliberately before a future main merge.
+
+---
+
 # Streetwise handoff: state, plan, where to start
 
 Written Saturday Oct 24, 2026. Deadline: **Sunday Oct 25, 9:00 AM PT** (be at the venue by 8:00 AM). Read this first, then `README.md`.

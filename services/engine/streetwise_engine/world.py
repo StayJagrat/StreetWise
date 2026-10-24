@@ -59,7 +59,7 @@ class World:
 
     # ---------- graph ----------
     def _load_graph(self):
-        ways = json.loads((CACHE / "osm_ways.json").read_text()); G = nx.Graph(); P = self.proj
+        ways = json.loads((CACHE / "osm_ways.json").read_text(encoding="utf-8")); G = nx.Graph(); P = self.proj
         for wy in ways:
             if wy.get("type") != "way" or "geometry" not in wy: continue
             nodes, geom, tags = wy["nodes"], wy["geometry"], wy.get("tags", {})
@@ -74,7 +74,7 @@ class World:
 
     # ---------- OSM points ----------
     def _load_points(self):
-        pts = json.loads((CACHE / "osm_points.json").read_text()); P = self.proj
+        pts = json.loads((CACHE / "osm_points.json").read_text(encoding="utf-8")); P = self.proj
         self.places, lamps, cams, bus = [], [], [], []
         for el in pts:
             lat = el.get("lat") or el.get("center", {}).get("lat"); lon = el.get("lon") or el.get("center", {}).get("lon")
@@ -96,7 +96,7 @@ class World:
         f = CACHE / "hours_evidence.json"; self.hours_filled = 0
         for pl in self.places: pl["hours_source"] = "osm" if pl["hours"] else None
         if not f.exists(): return
-        ev = json.loads(f.read_text())
+        ev = json.loads(f.read_text(encoding="utf-8"))
         for pl in self.places:
             e = ev.get(pl["id"])
             if pl["hours"] is None and e and e.get("opening_hours") and e.get("confidence", 0) >= min_conf:
@@ -104,7 +104,7 @@ class World:
 
     # ---------- SF 311 ----------
     def _load_311(self):
-        rows = json.loads((CACHE / "sf311_history.json").read_text()); P = self.proj; seen, lamps, out = set(), [], []
+        rows = json.loads((CACHE / "sf311_history.json").read_text(encoding="utf-8")); P = self.proj; seen, lamps, out = set(), [], []
         from datetime import datetime, timedelta
         recent = (datetime(2026, 10, 24) - timedelta(days=180)).strftime("%Y-%m-%d")
         for r in rows:

@@ -36,6 +36,7 @@ export interface Fix {
   heading: number;
   speed: number;
   accuracy: number;
+  timestamp: number;
 }
 
 /** watchPosition every 2–3 s while the screen is on. */
@@ -51,11 +52,15 @@ export function watchLocation(onFix: (f: Fix) => void, onError: (msg: string) =>
         heading: p.coords.heading ?? 0,
         speed: p.coords.speed ?? 0,
         accuracy: p.coords.accuracy,
+        timestamp: p.timestamp,
       }),
     (e) => onError(e.message || 'Location permission denied.'),
     { enableHighAccuracy: true, maximumAge: 2000, timeout: 10000 },
   );
-  return () => navigator.geolocation.clearWatch(id);
+  const poll = window.setInterval(() => {
+    if (document.visibilityState === 'visible') navigator.geolocation.getCurrentPosition(p => onFix({ lngLat: [p.coords.longitude,p.coords.latitude], heading:p.coords.heading ?? 0, speed:p.coords.speed ?? 0, accuracy:p.coords.accuracy, timestamp:p.timestamp }), () => undefined, { enableHighAccuracy:true, maximumAge:2000, timeout:8000 });
+  }, 5000);
+  return () => { navigator.geolocation.clearWatch(id); window.clearInterval(poll); };
 }
 
 export function vibrate(pattern: number | number[]) {

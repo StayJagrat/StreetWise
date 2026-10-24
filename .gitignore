@@ -22,3 +22,8 @@ services/agents/*_data.json
 legacy/web/public/tiles/*.pmtiles
 streetwise-web/public/tiles/*.pmtiles
 data/raw/
+.streetwise/
+artifacts/
+
+# Runtime calibration caches are reproducible; existing tracked references remain.
+data/cache/norms/

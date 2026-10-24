@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import maplibregl, { type GeoJSONSource, type LngLatBoundsLike, type Map as MLMap, type PaddingOptions } from 'maplibre-gl';
+import * as maplibregl from 'maplibre-gl';
+import mapWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?url';
+
+// Vite must emit MapLibre 6's separate module worker in dev and production.
+maplibregl.setWorkerUrl(mapWorkerUrl);
+import type * as GeoJSON from 'geojson';
+import { type GeoJSONSource, type LngLatBoundsLike, type Map as MLMap, type PaddingOptions } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { Protocol } from 'pmtiles';
 import { buildStyle, UI_COLORS, type Theme } from '../lib/mapStyle';
@@ -119,7 +125,7 @@ export default function MapView(p: MapViewProps) {
         'circle-opacity': 0.9,
       } });
       m.addLayer({ id: 'dim-label', type: 'symbol', source: 'dims', filter: ['==', ['get', 'showLabel'], true], layout: {
-        'symbol-placement': 'line-center', 'text-field': ['get', 'label'], 'text-font': ['Noto Sans Bold'], 'text-size': 11,
+        'symbol-placement': 'line-center', 'text-field': ['get', 'label'], 'text-font': ['Noto Sans Regular'], 'text-size': 11,
         'text-letter-spacing': 0.08, 'text-offset': [0, -1.4], 'text-keep-upright': true,
       }, paint: { 'text-color': colors.text2, 'text-halo-color': colors.surface, 'text-halo-width': 3 } });
       m.on('click', 'dims-hit', (ev) => {

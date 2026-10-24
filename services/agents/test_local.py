@@ -21,9 +21,10 @@ os.environ.pop("SCOUT_FIXED_SESSION", None)
 from uagents import Agent, Bureau, Context, Protocol                                                         # noqa: E402
 from uagents_core.contrib.protocols.chat import (ChatAcknowledgement, ChatMessage, EndSessionContent, MetadataContent, TextContent, chat_protocol_spec)  # noqa: E402
 
-from common import Engine, address_of, local_bureau_policy, seed_for                                                               # noqa: E402
+from common import Engine, address_of, load_places, local_bureau_policy, seed_for                                                               # noqa: E402
 from parser import SF, parse_request                                                                         # noqa: E402
-from registry import build_all                                                                               # noqa: E402
+from registry import build_all
+from models import HoursQuery, HoursReply                                                                               # noqa: E402
 
 PASS, FAIL = [], []
 
@@ -45,7 +46,7 @@ async def unit_tests():
     p = parse_request("hello there", lm, now=now); check("non-route text is rejected politely", not p.ok and p.errors)
     p = parse_request("from powell to atlantis at 9pm", lm, now=now); check("unknown place gives suggestions", not p.ok and "Places I know" in p.errors[0])
     out = await e.route("t-unit", (37.7844, -122.4079), (37.7796, -122.4139), 4, 1420)
-    check("engine /api/route returns fast and best", {r["id"] for r in out["routes"]} == {"fast", "best"}); await e.reset("t-unit")
+    check("engine returns a valid fastest route and optional distinct alternatives", "fast" in {r["id"] for r in out["routes"]} and all(0 <= r["score"] <= 100 and len(r["coords"]) >= 2 for r in out["routes"])); await e.reset("t-unit")
 
 
 async def e2e():
@@ -63,6 +64,10 @@ async def e2e():
     async def ack(ctx: Context, sender: str, msg: ChatAcknowledgement): results["acks"] = results.get("acks", 0) + 1
 
     client.include(chat)
+    hours_inbox = asyncio.Queue()
+    @client.on_message(HoursReply)
+    async def got_hours(ctx: Context, sender: str, msg: HoursReply):
+        await hours_inbox.put((sender, msg))
 
     async def say(ctx, text, wait=60):
         await ctx.send(scout, ChatMessage(timestamp=datetime.now(timezone.utc), msg_id=__import__("uuid").uuid4(), content=[TextContent(type="text", text=text)]))
@@ -74,6 +79,18 @@ async def e2e():
     async def script(ctx: Context):
         try:
             await asyncio.sleep(3)
+            # Exercise the actual typed place-agent protocol independently of
+            # whether today's citywide fastest route passes a registered demo shop.
+            cfg = load_places()[0]
+            target = address_of("place:" + cfg["place_id"])
+            await ctx.send(target, HoursQuery(place_id=cfg["place_id"], day=4, minute=1380))
+            sender, hours = await asyncio.wait_for(hours_inbox.get(), 10)
+            results["hours_confirmed"] = sender == target and hours.place_id == cfg["place_id"] and hours.open_at_minute and hours.simulated and hours.open_until >= 1380
+            engine = Engine()
+            await engine.route("t-direct-shop", (37.7844, -122.4079), (37.7796, -122.4139), 4, 1380)
+            declaration = await engine.declare("t-direct-shop", cfg["place_id"], hours.open_until, 4, 1380)
+            results["hours_rescored"] = bool(declaration.get("route", {}).get("routes"))
+            await engine.reset("t-direct-shop")
             m = await say(ctx, "hi"); results["help"] = txt(m)
             t0 = time.time(); m = await say(ctx, "Walk me from Powell BART to Civic Center at 11:40pm Friday"); results["plan"] = txt(m); results["plan_msg"] = m; results["plan_s"] = time.time() - t0
             os.environ["SCOUT_CARDS"] = "0"            # same process: flip scout to text-only and check the plain path too
@@ -106,9 +123,9 @@ async def e2e():
     check("scout acknowledged our message (chat protocol ack)", results.get("acks", 0) >= 1)
     check("help text for greeting", "Streetwise Scout" in results.get("help", ""))
     plan = results.get("plan", "")
-    check("reply has fast vs Streetwise table with scores", "| Score" in plan and "Fastest" in plan and "Streetwise" in plan)
+    check("reply explains distinct alternatives or the fastest also being best", "| Score" in plan and (("Fastest" in plan and "Streetwise" in plan) or "also the best-scoring one" in plan))
     check("reply names the longest empty stretch", "Longest empty stretch" in plan)
-    check("a shop agent confirmed and score change is reported", "Shop agent confirmed" in plan and "to" in plan.split("Shop agent confirmed")[-1] and "simulated demo shop agent" in plan, plan[-400:])
+    check("typed shop-agent reply is scoped, simulated and re-evaluated by the engine", results.get("hours_confirmed") and results.get("hours_rescored"))
     check("interactive card attached when SCOUT_CARDS=1 (text still present, session left open for the card)", any(isinstance(c, MetadataContent) for c in results["plan_msg"].content) and any(isinstance(c, TextContent) for c in results["plan_msg"].content))
     check("text-only reply (cards off) has no card and ends the session", "plain_msg" in results and not any(isinstance(c, MetadataContent) for c in results["plain_msg"].content) and any(isinstance(c, EndSessionContent) for c in results["plain_msg"].content))
     check("a different route also answers (Union Square -> Ferry Building)", "Union Square to Ferry Building" in results.get("plain", "") and "| Score" in results.get("plain", ""), results.get("plain", "")[:200])

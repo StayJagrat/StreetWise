@@ -33,7 +33,8 @@ def _until(text: str, departure: int) -> int | None:
         return None
     if not 0 <= hour < 24 or not 0 <= minute < 60:
         return None
-    return hour * 60 + minute + (1440 if hour < 12 else 0)
+    until = (departure // 1440) * 1440 + hour * 60 + minute
+    return until + (1440 if until <= departure else 0)
 
 
 class LiveWalk:
@@ -62,6 +63,13 @@ class LiveWalk:
         self.reply_task: asyncio.Task | None = None
         self.escalate_task: asyncio.Task | None = None
         self.input_ids: set[str] = set()
+        self.time_scale = 1
+        self.replay = True
+        self.fix_time = 0.0
+        self.tracking_visible = True
+        self.incident_id = None
+        self.checkin_deadline = None
+        self.escalate_deadline = None
 
     async def send(self, msg: dict):
         await self.emit({"id": uuid.uuid4().hex, "walkId": self.walk_id, "ts": round(time.time() * 1000), "from": "engine", "msg": msg})
@@ -93,6 +101,7 @@ class LiveWalk:
         self.engine.clear(self.session)
         self.routes.clear()
         self.running = self.checkin = self.escalated = self.acknowledged = False
+        self.incident_id = self.checkin_deadline = self.escalate_deadline = None
         self.position = self.last_distance = self.stopped_at = None
         self.distance = 0.0
 
@@ -165,6 +174,7 @@ class LiveWalk:
         self._cancel_timers()
         self.running = True
         self.checkin = self.escalated = self.acknowledged = False
+        self.incident_id = self.checkin_deadline = self.escalate_deadline = None
         self.stopped_at = None
         self.last_distance = None
         await self.log("watcher", "Following live positions and the agreed check-in thresholds.", "The Watcher applies deterministic stop and reply rules to the chosen route.")
@@ -200,8 +210,11 @@ class LiveWalk:
 
     async def _after_stop(self):
         try:
-            await asyncio.sleep(self.thresholds["stopSeconds"])
+            await asyncio.sleep(self.thresholds["stopSeconds"] / self.time_scale)
             if not self.running or self.stopped_at is None:
+                return
+            if not self.replay and (not self.tracking_visible or time.time() - self.fix_time > 15):
+                await self.log("watcher", "Tracking needs a fresh location before checking a stop.", "Missing GPS updates are not evidence that the walker stopped.")
                 return
             route = self._route()
             # watcher_decide owns the near-open-place exception and stop decision.
@@ -211,10 +224,13 @@ class LiveWalk:
             elif decision["decision"] == "checkin":
                 decision["why"] = (f"stopped {self.thresholds['stopSeconds']:g} s on a segment with no open place within 60 m")
                 self.checkin = True
+                self.incident_id = uuid.uuid4().hex
+                self.acknowledged = False
                 wait = self.thresholds["replySeconds"]
-                await self.send({"type": "checkin.ask", "agent": "watcher", "text": decision["msg"],
+                self.checkin_deadline = round(time.time() * 1000 + wait * 1000 / self.time_scale)
+                await self.send({"type": "checkin.ask", "incidentId": self.incident_id, "agent": "watcher", "text": decision["msg"],
                                  "reason": decision["why"], "windowSec": wait,
-                                 "deadline": round(time.time() * 1000) + wait * 1000})
+                                 "deadline": self.checkin_deadline})
                 await self.say("watcher", decision["msg"])
                 await self.log("watcher", f"Asked for a check-in after {self.thresholds['stopSeconds']} seconds still.", decision["why"], "walker")
                 self.reply_task = asyncio.create_task(self._after_reply())
@@ -225,7 +241,7 @@ class LiveWalk:
 
     async def _after_reply(self):
         try:
-            await asyncio.sleep(self.thresholds["replySeconds"])
+            await asyncio.sleep(max(0, (self.checkin_deadline / 1000 - time.time())) if self.checkin_deadline else self.thresholds["replySeconds"] / self.time_scale)
             if self.checkin:
                 await self._escalate(f"No reply for {self.thresholds['replySeconds']} seconds")
         except asyncio.CancelledError:
@@ -240,19 +256,22 @@ class LiveWalk:
         # The engine's 135 s rule is the default 90 s stop plus 45 s reply.
         decision = self.engine.watcher_decide(route, self.distance, self.last_distance, 90, 135, False)
         self.checkin = False
+        self.incident_id = self.incident_id or uuid.uuid4().hex
         self.escalated = True
+        self.acknowledged = False
         ll = self.position or route["coords"][0]
         where = next((step["street"] for step in route["steps"] if step["at_m"] <= self.distance < step["at_m"] + step["len_m"]), "the route")
         await self.send({"type": "escalate", "reason": reason, "lngLat": ll})
-        await self.send({"type": "guardian.alert", "reason": reason, "lngLat": ll, "where": where})
+        await self.send({"type": "guardian.alert", "incidentId": self.incident_id, "reason": reason, "lngLat": ll, "where": where})
         await self.log("watcher", decision["msg"], decision["why"], "Rescuer")
         await self.log("rescuer", f"Alert visible on {self.guardian}'s live link. No call or text was sent.", "Standing order: trusted contact first; this build does not contact emergency services.", "guardian")
         await self.say("rescuer", f"I've alerted {self.guardian.split()[0]} on the live link. Say I'm fine or tap the button if you're okay.")
+        self.escalate_deadline = time.time() + self.thresholds["escalateSeconds"] / self.time_scale
         self.escalate_task = asyncio.create_task(self._after_escalate())
 
     async def _after_escalate(self):
         try:
-            await asyncio.sleep(self.thresholds["escalateSeconds"])
+            await asyncio.sleep(max(0, self.escalate_deadline - time.time()) if self.escalate_deadline else self.thresholds["escalateSeconds"] / self.time_scale)
             if self.escalated and not self.acknowledged:
                 await self.log("rescuer", "Guardian has not acknowledged the live link alert. Route, time, and last position are ready for a handoff.",
                                "No automatic call or message is sent from this build.")
@@ -293,7 +312,7 @@ class LiveWalk:
             if until and until > self.minute:
                 ctx.overrides[ident] = until
             else:
-                ctx.overrides.pop(ident, None)
+                ctx.overrides[ident] = -1
         stats = await run_in_threadpool(self._rescore)
         await self._plan(f"{name}'s simulated hours update was applied at the arrival minute. The fixed routes were re-scored by the Python engine. Conditions, not a safety rating.", stats)
         await self.log("scout", f"Re-scored the fixed routes after {name}'s simulated hours update: {stats['streetwise']['score']} vs {stats['shortest']['score']}.",
@@ -306,7 +325,7 @@ class LiveWalk:
                     "shortest": _fixed_route_stats(self.engine, self.routes["fast"], ctx)}
 
     async def audit(self):
-        debt = await run_in_threadpool(self.engine.darkness_debt, self.day, self.minute, 1200, 3)
+        debt = await run_in_threadpool(self.engine.darkness_debt, self.day, self.minute, 300, 3, self.engine.center_of(self._route()["coords"]) if self.routes else self.engine.W.proj.xy(37.789, -122.408))
         ranking = [{"street": row["street"], "minutes": row["minutes"]} for row in debt["rows"]]
         if not ranking:
             await self.send({"type": "audit.result", "ranking": [], "draft311": "DRAFT — not submitted. No modeled street ranking is available."})

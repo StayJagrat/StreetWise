@@ -9,7 +9,7 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
-      registerType: 'autoUpdate',
+      registerType: 'prompt',
       includeAssets: ['mascots/*.svg', 'data/*.json', 'icons/*.png'],
       manifest: {
         name: 'Streetwise',
@@ -19,7 +19,7 @@ export default defineConfig({
         background_color: '#10141C',
         display: 'standalone',
         orientation: 'portrait',
-        start_url: '/plan',
+        start_url: '/',
         icons: [
           { src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' },
           { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png' },
@@ -27,9 +27,9 @@ export default defineConfig({
         ],
       },
       workbox: {
-        globPatterns: ['**/*.{js,css,html,svg,png,json,woff2}'],
-        maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
-        navigateFallbackDenylist: [/^\/ws/],
+        globPatterns: ['**/*.{js,mjs,css,html,svg,png,json,geojson,woff2,pbf}'],
+        maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
+        navigateFallbackDenylist: [/^\/ws/, /^\/api/],
         runtimeCaching: [
           {
             urlPattern: /\/tiles\/.*\.pmtiles$/,

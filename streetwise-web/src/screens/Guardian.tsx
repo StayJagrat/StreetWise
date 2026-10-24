@@ -32,23 +32,26 @@ function beep() {
 
 export default function Guardian() {
   const { walk = 'demo' } = useParams();
-  const { data, error } = useDemoData();
+  const { data: cachedData, error } = useDemoData();
   const settings = useMemo(loadSettings, []);
   const { state, send, status } = useWalk(walk, 'guardian');
+  const data = state.plan?.data ?? cachedData;
+  const [accepted, setAccepted] = useState(false);
   const [sound, setSound] = useState(false);
   const [details, setDetails] = useState(false);
   const [now, setNow] = useState(Date.now());
-  const me = settings.guardianName.split(' ')[0];
-  const walker = settings.walkerName;
+  const me = (state.profile?.guardianName ?? settings.guardianName).split(' ')[0];
+  const walker = state.profile?.walkerName ?? data?.walker.name ?? settings.walkerName;
+  const phone = state.profile?.walkerPhone;
+  const callHref = phone && /^\+?[0-9()\s-]{7,30}$/.test(phone) ? `tel:${phone.replace(/[^+0-9]/g, '')}` : null;
 
   useEffect(() => {
-    send({ type: 'guardian.join', name: me });
     const t = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const alerting = !!state.alert && !state.alert.ackBy;
+  const alerting = accepted && !!state.alert && !state.alert.ackBy;
   const lastAlert = useRef(0);
   useEffect(() => {
     if (state.alert && state.alert.ts !== lastAlert.current && !state.alert.ackBy) {
@@ -58,9 +61,10 @@ export default function Guardian() {
     }
   }, [state.alert]);
 
+  if (status === 'blocked') return <div className="screen screen--scroll setup" data-theme="day"><main className="setup__body"><h1 className="t-display">This walk link has expired.</h1><p>Ask the walker for a new private guardian invitation.</p><a href="/">Streetwise home</a></main></div>;
   if (!data) return <div className="screen" data-theme="day" role={error ? 'alert' : undefined} style={{ padding: 24 }}>{error ?? 'Loading route…'}</div>;
   const places = mergedPlaces(data, state);
-  const active = state.phase !== 'preview' && state.phase !== 'arrived';
+  const active = accepted && ['walking', 'checkin', 'escalated'].includes(state.phase);
   const lastCheck = state.lastReply?.reply === 'fine' ? state.lastReply.ts : state.startedAt;
   const routeLen = lineLength(state.choice === 'usual' ? data.shortest : data.route);
   const remaining = state.position ? Math.max(1, Math.round(((1 - state.position.progress) * routeLen) / 1.35 / 60)) : null;
@@ -85,7 +89,7 @@ export default function Guardian() {
           <div className="wordmark">streetwise</div>
           <div className="t-caption" style={{ fontSize: 12 }}>Shared by {walker} · ends when the walk ends</div>
         </div>
-        {active ? (
+        {active && status === 'online' ? (
           <span className="live-pill"><span className="dot dot--live" /> LIVE</span>
         ) : (
           <LinkBadge status={status} />
@@ -99,7 +103,9 @@ export default function Guardian() {
       )}
 
       <Sheet label="Walk status">
-        {state.phase === 'preview' && (
+        {!accepted && <><h1 className="t-display">Be there for {walker}.</h1><p className="muted">Accept this private invitation to follow the walk and acknowledge check-ins. Keep this page visible for alerts.</p><Button kind="primary" block disabled={status !== 'online'} onClick={() => { setAccepted(true); unlockAudio(); setSound(true); send({ type: 'guardian.join', name: me }); }}>Accept guardian invitation</Button></>}
+        {status !== 'online' && <p className="status-note status-note--warning" role="status">Connection unavailable. Live position and alerts may be delayed.</p>}
+        {accepted && state.phase === 'preview' && (
           <>
             <h1 className="t-display">Waiting for {walker} to start walking</h1>
             <p className="muted" style={{ margin: 0 }}>You'll see {walker}'s live position here once the walk begins. Nothing is shared before or after.</p>
@@ -112,7 +118,7 @@ export default function Guardian() {
               {remaining ? `${remaining} min away` : 'On the way'} · {lastCheck ? `checked in ${Math.max(0, Math.round((now - lastCheck) / 60000))} min ago` : 'just left'}
             </p>
             {state.alert?.ackBy && (
-              <div className="g-ack"><Icon name="check" size={18} /> {state.lastReply?.reply === 'fine' && state.lastReply.ts > state.alert.ts ? `${walker} said they're fine.` : `You're on it. ${walker} can see that.`}</div>
+              <div className="g-ack"><Icon name="check" size={18} /> {state.lastReply?.reply === 'fine' && state.lastReply.ts > state.alert.ts ? `${walker} said they're fine.` : `You acknowledged the alert. Waiting for ${walker} to confirm they are okay.`}</div>
             )}
             <div className="facts">
               <div><span>Route</span><strong>{state.choice === 'usual' ? 'Shortest route' : 'Streetwise route'}</strong></div>
@@ -120,12 +126,12 @@ export default function Guardian() {
               <div><span>Arrives</span><strong>{data.end.name}{remaining ? ` · ${timeOf(now + remaining * 60000)}` : ''}</strong></div>
             </div>
             <p className="t-caption" style={{ margin: 0 }}>If {walker} stops answering, you'll get a full-screen alert here first. Location sharing stops when the walk ends.</p>
-            <a className="btn btn--secondary btn--block" href="tel:" style={{ textDecoration: 'none' }}>Call {walker}</a>
+            {callHref ? <a className="btn btn--secondary btn--block" href={callHref} style={{ textDecoration: 'none' }}>Call {walker}</a> : <p className="t-caption">No phone number was shared. Contact {walker} through your usual channel.</p>}
           </>
         )}
-        {state.phase === 'arrived' && (
+        {(state.phase === 'arrived' || state.phase === 'ended') && (
           <>
-            <h1 className="t-display">{walker} has arrived</h1>
+            <h1 className="t-display">{state.phase === 'arrived' ? `${walker} has arrived` : `${walker} ended the walk`}</h1>
             <p className="muted" style={{ margin: 0 }}>The walk ended and location sharing stopped. Thanks for being there.</p>
           </>
         )}
@@ -142,8 +148,8 @@ export default function Guardian() {
               progress={state.position?.progress ?? 0} camera="follow" interactive={false} />
           </div>
           <div style={{ flex: 1 }} />
-          <a className="g-alert__call" href="tel:"><Icon name="phone" size={22} /> Call {walker}</a>
-          <button type="button" className="g-alert__ack" onClick={() => send({ type: 'guardian.ack', by: me })}>I'm on it — clear the alert</button>
+          {callHref && <a className="g-alert__call" href={callHref}><Icon name="phone" size={22} /> Call {walker}</a>}
+          <button type="button" className="g-alert__ack" onClick={() => send({ type: 'guardian.ack', by: me })}>Acknowledge alert</button>
           <button type="button" className="g-alert__link" onClick={() => setDetails(true)}>See details (position, route, time, reason)</button>
           <p className="g-alert__foot">Streetwise does not call 911. If you need emergency help, call 911 yourself.</p>
         </div>

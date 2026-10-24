@@ -1,24 +1,26 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import WalkTools from '../components/WalkTools';
 import MapView from '../components/MapView';
 import { Button, DemoTape, HoldButton, Icon, Initials, LinkBadge, Mascot, Sheet, StreetSign } from '../components/ui';
 import { DemoEngine } from '../lib/engine';
 import { cumulative, lineLength, project, turnsFromSteps } from '../lib/geo';
 import { AGENT_LABEL, meters, timeOf } from '../lib/format';
-import { getRoomStore, loadSettings, mergedPlaces, useDemoData, useWalk, walkIdFromUrl } from '../lib/store';
-import { canListen, isMuted, listen, setMuted, speak, unlockAudio, type ListenerHandle } from '../lib/voice';
+import { getRoomStore, isGatewayMode, loadSettings, mergedPlaces, useDemoData, useWalk, walkIdFromUrl } from '../lib/store';
+import { isMuted, setMuted, speak, unlockAudio } from '../lib/voice';
 import { keepAwake, vibrate, watchLocation } from '../lib/device';
 import './walk.css';
 
-const engineEnabled = () => new URLSearchParams(location.search).get('engine') !== 'off' && import.meta.env.VITE_ENGINE !== 'off';
+const engineEnabled = () => !isGatewayMode();
 
 export default function Walk() {
   const walkId = walkIdFromUrl();
-  const { data, error } = useDemoData();
+  const { data: cachedData, error } = useDemoData();
   const settings = useMemo(loadSettings, []);
   const { state, send, status, room } = useWalk(walkId, 'walker');
+  const data = state.plan?.data ?? cachedData;
+  const prepared = useRef(false);
   const engine = useRef<DemoEngine | null>(null);
-  const listener = useRef<ListenerHandle | null>(null);
   const [muted, setMutedState] = useState(isMuted());
   const [now, setNow] = useState(Date.now());
   const [gpsError, setGpsError] = useState<string | null>(null);
@@ -51,6 +53,16 @@ export default function Walk() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);
 
+  useEffect(() => {
+    if (engineEnabled() || !cachedData || status !== 'online' || state.plan || prepared.current || state.phase !== 'preview') return;
+    prepared.current = true;
+    send({ type: 'walk.accept', choice: settings.preferredChoice ?? 'streetwise', guardian: settings.guardianName,
+      thresholds: settings.thresholds,
+      origin: { lat: cachedData.start.lngLat[1], lon: cachedData.start.lngLat[0] },
+      dest: { lat: cachedData.end.lngLat[1], lon: cachedData.end.lngLat[0] },
+      day: cachedData.scenario.day ?? 4, minute: cachedData.scenario.departureMinute });
+  }, [cachedData, status, state.plan, state.phase, send, settings]);
+
   // speak every new line
   const lastSaid = useRef(0);
   useEffect(() => {
@@ -73,29 +85,33 @@ export default function Walk() {
 
   // live mode: real GPS fixes go to the gateway
   useEffect(() => {
-    if (engineEnabled() || !data || state.phase === 'preview' || state.phase === 'arrived') return;
+    if (engineEnabled() || !data || state.replay || state.phase === 'preview' || state.phase === 'arrived' || state.phase === 'ended') return;
     const line = state.choice === 'usual' ? data.shortest : data.route;
     const cum = cumulative(line);
     const total = lineLength(line);
     return watchLocation(
       (f) => {
         const pr = project(line, f.lngLat, cum);
-        send({ type: 'walk.position', lngLat: f.lngLat, heading: f.heading, speed: f.speed, progress: pr.meters / total, replay: false });
+        send({ type: 'walk.position', lngLat: f.lngLat, heading: f.heading, speed: f.speed, progress: pr.meters / total, replay: false, fixTime: f.timestamp, accuracy: f.accuracy });
       },
       (msg) => setGpsError(msg),
     );
-  }, [data, state.phase, state.choice, send]);
+  }, [data, state.phase, state.choice, state.replay, send]);
+
+  useEffect(() => {
+    if (state.replay || state.phase === 'preview' || state.phase === 'arrived' || state.phase === 'ended') return;
+    const visibility = () => send({ type: 'tracking.visibility', visible: document.visibilityState === 'visible' });
+    document.addEventListener('visibilitychange', visibility);
+    return () => document.removeEventListener('visibilitychange', visibility);
+  }, [state.replay, state.phase, send]);
 
   // stop listening/awake when the walk ends
   useEffect(() => {
-    if (state.phase === 'arrived') {
-      listener.current?.stop();
-      listener.current = null;
+    if (state.phase === 'arrived' || state.phase === 'ended') {
       void keepAwake(false);
     }
   }, [state.phase]);
   useEffect(() => () => {
-    listener.current?.stop();
     void keepAwake(false);
   }, []);
 
@@ -103,20 +119,15 @@ export default function Walk() {
     if (!data) return;
     unlockAudio(); // the "Walk with me" tap doubles as the audio unlock
     void keepAwake(true);
-    if (canListen() && !listener.current) {
-      listener.current = listen((intent) => send({ type: 'checkin.reply', reply: intent, via: 'voice' }));
-    }
     if (engine.current) engine.current.start(choice);
     else {
-      send({ type: 'walk.reset' });
-      send({
-        type: 'walk.accept', choice, guardian: settings.guardianName,
-        thresholds: settings.thresholds,
+      if (state.choice !== choice) send({
+        type: 'walk.accept', choice, guardian: settings.guardianName, thresholds: settings.thresholds,
         origin: { lat: data.start.lngLat[1], lon: data.start.lngLat[0] },
         dest: { lat: data.end.lngLat[1], lon: data.end.lngLat[0] },
         day: data.scenario.day ?? 4, minute: data.scenario.departureMinute,
       });
-      send({ type: 'walk.start', replay: false });
+      send({ type: 'walk.start', replay: state.replay, timeScale: settings.timeScale });
     }
   };
 
@@ -145,7 +156,7 @@ export default function Walk() {
   const stats = plan?.stats ?? data.stats;
   const demoClock = new Date(now);
   demoClock.setHours(Math.floor(data.scenario.departureMinute / 60), data.scenario.departureMinute % 60, 0, 0);
-  const arrive = state.replay && engineEnabled()
+  const arrive = state.replay
     ? demoClock.getTime() + (state.choice === 'usual' ? stats.shortest.minutes : stats.streetwise.minutes) * 60000
     : now + etaMin * 60000;
   const brightened = Object.keys(state.brightened);
@@ -155,18 +166,19 @@ export default function Walk() {
     : null;
 
   return (
-    <div className="screen walk" data-theme="night">
+    <main id="main-content" className="screen walk" data-theme="night">
       <MapView
         theme="night"
         data={data}
         choice={state.choice}
         places={places}
+        showLamps={false}
         showShortest={phase === 'preview'}
         showDimLabel={phase === 'preview'}
         brightened={brightened}
         puck={puck}
         progress={phase === 'preview' ? 0 : progress}
-        camera={phase === 'preview' || phase === 'arrived' ? 'overview' : 'follow'}
+        camera={phase === 'preview' || phase === 'arrived' || phase === 'ended' ? 'overview' : 'follow'}
         padding={phase === 'preview' ? { top: 90, bottom: 430, left: 30, right: 30 } : phase === 'checkin' ? { top: 140, bottom: 470 } : { top: 170, bottom: 380 }}
         bouncePlace={brightened[brightened.length - 1] ?? null}
       />
@@ -179,7 +191,7 @@ export default function Walk() {
             <span className="dot" />
             {data.scenario.label} · leaving {data.start.name}
           </div>
-        ) : phase !== 'arrived' && next ? (
+        ) : phase !== 'arrived' && phase !== 'ended' && next ? (
           <StreetSign
             street={next.direction === 'arrive' ? data.end.name : next.street}
             direction={next.direction === 'arrive' ? 'arrive' : toNext > 160 ? 'straight' : next.direction}
@@ -236,9 +248,10 @@ export default function Walk() {
             <span><i className="legend__dots" /> Shortest path on our map</span>
           </div>
           <div className="btn-row">
-            <Button kind="secondary" onClick={() => go('usual')}>Keep usual</Button>
-            <Button kind="primary" onClick={() => go('streetwise')}>Go this way</Button>
+            <Button kind="secondary" disabled={(isGatewayMode() && status !== 'online') || !plan} onClick={() => go('usual')}>Keep usual</Button>
+            <Button kind="primary" disabled={(isGatewayMode() && status !== 'online') || !plan} onClick={() => go('streetwise')}>Go this way</Button>
           </div>
+          <WalkTools walkId={walkId} state={state} data={data} send={send} status={status} />
         </Sheet>
       )}
 
@@ -246,12 +259,12 @@ export default function Walk() {
         <Sheet label="Walk">
           <div className="walk__eta">
             <div>
-              <div className="t-number" style={{ fontSize: 22 }}>HOME {timeOf(arrive).replace(' PM', '').replace(' AM', '')}</div>
+              <div className="t-number" style={{ fontSize: 22 }}>ARRIVE {timeOf(arrive).replace(' PM', '').replace(' AM', '')}</div>
               <div className="t-caption">{Math.max(1, Math.round(etaMin))} min · {meters(remaining)}</div>
             </div>
             <div className="guardian-chip">
               <Initials text={settings.guardianName[0]} />
-              {guardianFirst} {state.guardianJoined ? 'is watching' : 'gets a live link if needed'}
+              {!isGatewayMode() ? 'Demo guardian · this device' : `${guardianFirst} ${state.guardianJoined ? 'is watching' : 'gets a live link if needed'}`}
             </div>
           </div>
           <hr className="divider" />
@@ -267,14 +280,11 @@ export default function Walk() {
               <p className="t-spoken" aria-live="polite">{state.say.text}</p>
             </>
           )}
-          <div className="listening">
-            {listener.current ? <Wave /> : <Icon name="mic" size={16} />}
-            <span className="t-caption">{listener.current ? 'Listening — say "I\'m fine" or "help" anytime' : 'Voice replies aren\'t available here — use the buttons'}</span>
-          </div>
           <div className="btn-row">
             <Button kind="fine" icon="check" onClick={() => reply('fine')}>I'm fine</Button>
             <HoldButton onConfirm={() => reply('help')}>Hold for help</HoldButton>
           </div>
+          <WalkTools walkId={walkId} state={state} data={data} send={send} status={status} />
         </Sheet>
       )}
 
@@ -294,35 +304,37 @@ export default function Walk() {
             <Mascot agent="rescuer" state="talking" size={56} />
             <div>
               <div className="t-caption">Rescuer</div>
-              <h2 className="t-display" style={{ fontSize: 26, lineHeight: '30px' }}>{guardianFirst} has your live location</h2>
+              <h2 className="t-display" style={{ fontSize: 26, lineHeight: '30px' }}>Your guardian link has an alert</h2>
             </div>
           </div>
           <div className={`ack ${state.alert?.ackBy ? 'ack--on' : ''}`}>
             <Icon name={state.alert?.ackBy ? 'check' : 'ring'} size={18} />
-            {state.alert?.ackBy ? `${guardianFirst} is on it` : `Waiting for ${guardianFirst} to respond…`}
+            {state.alert?.ackBy ? `${state.alert?.ackBy} acknowledged the alert` : `Waiting for ${guardianFirst} to respond…`}
           </div>
           <Button kind="fine" icon="check" tall block onClick={() => reply('fine')}>I'm okay now</Button>
           <p className="t-caption center">Streetwise doesn't call 911. If you need emergency help, call 911 yourself.</p>
         </Sheet>
       )}
 
-      {phase === 'arrived' && (
+      {(phase === 'arrived' || phase === 'ended') && (
         <Sheet label="Arrived">
           <div className="speaker">
             <Mascot agent="reporter" state="done" size={56} />
             <div>
               <div className="t-caption">Reporter</div>
-              <h2 className="t-display" style={{ fontSize: 28 }}>You've arrived.</h2>
+              <h2 className="t-display" style={{ fontSize: 28 }}>{phase === 'arrived' ? 'You have arrived.' : 'Your walk has ended.'}</h2>
             </div>
           </div>
           <p className="t-caption" style={{ fontSize: 15, lineHeight: '21px' }}>{state.summary}</p>
+          {state.report && <p className="status-note">{state.report}</p>}
+          {state.observations.length > 0 && <p className="t-caption">{state.observations.length} street observation(s) saved for review.</p>}
           <div className="btn-row">
             <Button kind="secondary" onClick={() => nav(`/room?walk=${walkId}`)}>Control room</Button>
-            <Button kind="primary" onClick={() => { send({ type: 'walk.reset' }); engine.current?.plan(); }}>New walk</Button>
+            <Button kind="primary" onClick={() => nav('/plan')}>New walk</Button>
           </div>
         </Sheet>
       )}
-    </div>
+    </main>
   );
 }
 
@@ -354,15 +366,5 @@ function CheckIn({ checkin, now, guardian, onFine, onHelp }: { checkin: NonNulla
       <HoldButton block onConfirm={onHelp}>Hold for help</HoldButton>
       <p className="t-caption center">No answer in {secs} s → {guardian} gets your live location. Streetwise never calls 911 for you.</p>
     </Sheet>
-  );
-}
-
-function Wave() {
-  return (
-    <span className="wave" aria-hidden>
-      {[4, 10, 16, 8, 14, 6, 2].map((h, i) => (
-        <i key={i} style={{ height: h, animationDelay: `${i * 90}ms` }} />
-      ))}
-    </span>
   );
 }

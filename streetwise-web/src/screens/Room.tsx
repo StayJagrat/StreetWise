@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import QRCode from 'qrcode';
+import { loadInvitations, sessionLink } from '../lib/session';
 import MapView from '../components/MapView';
 import { AgentRow, DemoTape, Icon, LinkBadge, Mascot } from '../components/ui';
 import { DemoEngine } from '../lib/engine';
-import { along, cumulative, lineLength, project } from '../lib/geo';
 import { timeOf } from '../lib/format';
 import { isGatewayMode, loadSettings, mergedPlaces, useDemoData, useWalk, walkIdFromUrl, type LogEntry } from '../lib/store';
 import type { MascotState } from '../lib/types';
@@ -21,24 +21,22 @@ interface BlockVision {
 
 export default function Room() {
   const walkId = walkIdFromUrl();
-  const { data, error } = useDemoData();
+  const { data: cachedData, error } = useDemoData();
   const settings = useMemo(loadSettings, []);
   const { state, send, status, room } = useWalk(walkId, 'room');
+  const data = state.plan?.data ?? cachedData;
   const [qr, setQr] = useState('');
   const [stretch, setStretch] = useState<string | null>(null);
   const [vision, setVision] = useState<BlockVision | null>(null);
   const [draft, setDraft] = useState(false);
   const [now, setNow] = useState(Date.now());
   const engine = useRef<DemoEngine | null>(null);
-  const replayTimer = useRef<number | null>(null);
   const feedEnd = useRef<HTMLDivElement>(null);
-  const guardianParams = new URLSearchParams();
-  if (isGatewayMode()) guardianParams.set('engine', 'off');
-  if (settings.destination) {
-    guardianParams.set('destination', `${settings.destination.lngLat[1]},${settings.destination.lngLat[0]}`);
-    guardianParams.set('destinationName', settings.destination.name);
-  }
-  const guardianUrl = `${location.origin}/guardian/${walkId}${guardianParams.size ? `?${guardianParams}` : ''}`;
+  const guardianUrl = sessionLink(walkId, 'guardian');
+  useEffect(() => {
+    if (!isGatewayMode() || status !== 'online') return;
+    void loadInvitations(walkId, 'room').then(() => setNow(Date.now())).catch(() => {});
+  }, [walkId, status]);
 
   useEffect(() => {
     QRCode.toDataURL(guardianUrl, { margin: 1, width: 360, color: { dark: '#10141C', light: '#ECE7DC' } }).then(setQr).catch(() => setQr(''));
@@ -47,7 +45,6 @@ export default function Room() {
     const t = window.setInterval(() => setNow(Date.now()), 1000);
     return () => {
       window.clearInterval(t);
-      if (replayTimer.current !== null) window.clearInterval(replayTimer.current);
       engine.current?.dispose();
     };
   }, []);
@@ -81,33 +78,11 @@ export default function Room() {
   };
   const startDemo = () => {
     if (isGatewayMode()) {
-      const scale = 30;
       send({ type: 'walk.reset' });
-      send({ type: 'walk.accept', choice: 'streetwise', guardian: settings.guardianName,
-        thresholds: { stopSeconds: settings.thresholds.stopSeconds / scale, replySeconds: settings.thresholds.replySeconds / scale, escalateSeconds: settings.thresholds.escalateSeconds / scale },
+      send({ type: 'walk.accept', choice: 'streetwise', guardian: settings.guardianName, thresholds: settings.thresholds,
         origin: { lat: data.start.lngLat[1], lon: data.start.lngLat[0] },
-        dest: { lat: data.end.lngLat[1], lon: data.end.lngLat[0] }, day: 4, minute: data.scenario.departureMinute });
-      send({ type: 'walk.start', replay: true });
-      const line = data.route;
-      const distances = cumulative(line);
-      const total = lineLength(line);
-      const duration = Math.max(15_000, total / (1.35 * scale) * 1000);
-      const started = Date.now();
-      const gap = data.dimStretches.find((s) => s.onRoute);
-      const gapMid = gap?.line[Math.floor((gap?.line.length ?? 1) / 2)];
-      const stopAt = gapMid ? project(line, gapMid, distances).meters / total : 0.4;
-      let stoppedAt: number | null = null;
-      const tick = window.setInterval(() => {
-        const elapsed = Date.now() - started;
-        let progress = Math.min(1, elapsed / duration);
-        if (gap && progress >= stopAt && stoppedAt === null) { stoppedAt = Date.now(); progress = stopAt; }
-        const stopped = stoppedAt !== null && Date.now() - stoppedAt < 5_000;
-        if (stoppedAt !== null) progress = stopped ? stopAt : Math.min(1, (elapsed - 5_000) / duration);
-        const point = stopped && gap ? gap.line[Math.floor(gap.line.length / 2)] : along(line, total * progress, distances).lngLat;
-        send({ type: 'walk.position', lngLat: point, heading: 0, speed: stopped ? 0 : 1.35 * scale, progress, replay: true });
-        if (progress >= 1) { window.clearInterval(tick); replayTimer.current = null; send({ type: 'walk.end', outcome: 'arrived', summary: 'Arrived at the selected destination.' }); }
-      }, 500);
-      replayTimer.current = tick;
+        dest: { lat: data.end.lngLat[1], lon: data.end.lngLat[0] }, day: data.scenario.day ?? 4, minute: data.scenario.departureMinute });
+      send({ type: 'walk.start', replay: true, timeScale: settings.timeScale });
       return;
     }
     const e = ensureEngine();
@@ -137,11 +112,10 @@ export default function Room() {
           <div className="wordmark" style={{ fontSize: 24 }}>streetwise</div>
           <div className="t-mono">control room</div>
         </div>
-        <nav className="room__nav">
+        <nav className="room__nav" aria-label="Walk screens">
+          <a className="room__nav-item" href={sessionLink(walkId, 'walker')} target="_blank" rel="noreferrer">Walker screen</a>
+          <a className="room__nav-item" href={sessionLink(walkId, 'shop')} target="_blank" rel="noreferrer">Shopkeeper screen</a>
           <span className="room__nav-item room__nav-item--on">Live walk {state.alert && !state.alert.ackBy && <b className="room__badge">1 alert</b>}</span>
-          <span className="room__nav-item">Agents</span>
-          <span className="room__nav-item">City ranking</span>
-          <span className="room__nav-item">Overnight audit</span>
         </nav>
         <div className="room__qr card">
           {qr ? <img src={qr} alt={`QR code for ${guardianUrl}`} /> : <div style={{ height: 160 }} />}
@@ -151,10 +125,11 @@ export default function Room() {
           </div>
         </div>
         <div style={{ flex: 1 }} />
-        <button type="button" className="room__action" onClick={startDemo} disabled={walkRunning}>
+        <button type="button" className="room__action" onClick={startDemo} disabled={walkRunning || status !== 'online' || !state.replay}>
           <Icon name="play" size={16} /> {walkRunning ? 'Walk in progress' : 'Start demo walk here'}
         </button>
-        <button type="button" className="room__action" onClick={runAudit}>
+        {walkRunning && state.replay && <div className="walk-tools"><button onClick={() => send({ type: 'demo.action', action: 'checkin' })}>Demo: stop for check-in</button><button onClick={() => send({ type: 'demo.action', action: 'finish' })}>Demo: arrive</button><button onClick={() => send({ type: 'demo.action', action: 'resume' })}>Resume replay</button></div>}
+        <button type="button" className="room__action" disabled={status !== 'online'} onClick={runAudit}>
           <Icon name="moon" size={16} /> Run overnight audit
         </button>
         <div className="room__det card">
@@ -164,7 +139,7 @@ export default function Room() {
           </div>
           <LinkBadge status={status} />
         </div>
-          <DemoTape label={isGatewayMode() ? (walkRunning ? state.replay ? 'DEMO · ×30 REPLAY' : 'LIVE · WALKER GPS' : 'GATEWAY · LIVE GPS') : 'DEMO · GPS REPLAY'} />
+          <DemoTape label={isGatewayMode() ? (walkRunning ? state.replay ? 'DEMO · GPS REPLAY' : 'LIVE · WALKER GPS' : 'GATEWAY · WALK PREVIEW') : 'DEMO · GPS REPLAY'} />
         <div className="t-mono" style={{ fontSize: 10 }}>OSM · SF 311 · missing hours count closed</div>
       </aside>
 
@@ -274,7 +249,7 @@ export default function Room() {
         <div className="g-modal" onClick={() => setDraft(false)} role="dialog" aria-label="Draft 311 report">
           <div className="g-modal__card" onClick={(e) => e.stopPropagation()} style={{ borderRadius: 24, marginBottom: 40 }}>
             <h2 className="t-title">Draft 311 report</h2>
-            <p style={{ margin: 0 }}>{state.audit?.draft311 ?? `DRAFT — not submitted. Review streetlight conditions on ${ranking[0].street}. The model estimates ${ranking[0].minutes} walker-minutes on lower-light segments in simulated trips. Confirm conditions before filing.`}</p>
+            <p style={{ margin: 0 }}>{state.audit?.draft311 ?? `DRAFT — not submitted. Review streetlight conditions on ${ranking[0]?.street ?? 'the selected route'}. The model estimates ${ranking[0]?.minutes ?? 0} walker-minutes on lower-light segments in simulated trips. Confirm conditions before filing.`}</p>
             <p className="t-caption" style={{ margin: 0 }}>Reports stay drafts for human review. Streetwise never files with the city on its own.</p>
             <button type="button" className="btn btn--secondary" onClick={() => setDraft(false)}>Close</button>
           </div>

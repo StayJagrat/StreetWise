@@ -1,11 +1,12 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
+import { currentSession } from './session';
 import { Room, type LinkStatus, type Role } from './transport';
 import type { AgentName, DemoData, Envelope, LngLat, Msg, Place, Thresholds } from './types';
 
 // Every screen rebuilds the same WalkState from the message stream,
 // so the walker, guardian, shop and control room always agree.
 
-export type Phase = 'preview' | 'walking' | 'checkin' | 'escalated' | 'arrived';
+export type Phase = 'preview' | 'walking' | 'checkin' | 'escalated' | 'arrived' | 'ended';
 
 export interface LogEntry {
   id: string;
@@ -23,6 +24,7 @@ export interface TimelineEvent {
 }
 
 export interface WalkState {
+  notice?: string;
   phase: Phase;
   plan?: Extract<Msg, { type: 'walk.plan' }>['plan'];
   choice?: 'streetwise' | 'usual';
@@ -31,9 +33,9 @@ export interface WalkState {
   position?: { lngLat: LngLat; heading: number; progress: number; ts: number };
   trail: LngLat[];
   say?: { agent: AgentName; text: string; ts: number };
-  checkin?: { text: string; reason: string; deadline: number; windowSec: number; ts: number };
+  checkin?: { incidentId?: string; text: string; reason: string; deadline: number; windowSec: number; ts: number };
   lastReply?: { reply: 'fine' | 'help'; via: 'voice' | 'tap'; ts: number };
-  alert?: { reason: string; lngLat: LngLat; where: string; ts: number; ackBy?: string; ackTs?: number };
+  alert?: { incidentId?: string; reason: string; lngLat: LngLat; where: string; ts: number; ackBy?: string; ackTs?: number };
   places: Record<string, Partial<Place>>;
   brightened: Record<string, number>;
   log: LogEntry[];
@@ -42,10 +44,17 @@ export interface WalkState {
   audit?: { ranking: { street: string; minutes: number }[]; draft311: string; ts: number };
   summary?: string;
   engineFrom?: Role;
+  outcome?: 'arrived' | 'ended' | 'incident';
+  profile?: Extract<Msg, { type: 'session.info' }>['profile'];
+  tracking?: Extract<Msg, { type: 'tracking.health' }>;
+  help?: Extract<Msg, { type: 'help.status' }>;
+  observations: Extract<Msg, { type: 'observation.saved' }>['observation'][];
+  report?: string;
 }
 
 export const initialState = (): WalkState => ({
   phase: 'preview',
+  observations: [],
   replay: true,
   trail: [],
   places: {},
@@ -64,14 +73,29 @@ export function reduce(s: WalkState, e: Envelope): WalkState {
   const m = e.msg;
   const ts = e.ts;
   switch (m.type) {
+    case 'session.info':
+      return { ...s, profile: m.profile, replay: m.mode === 'demo' };
+    case 'gateway.error':
+      return { ...s, notice: m.message };
+    case 'tracking.health':
+      return { ...s, tracking: m };
+    case 'help.status':
+      return { ...s, help: m };
+    case 'observation.saved':
+      return { ...s, observations: [...s.observations, m.observation] };
+    case 'report.ready':
+      return { ...s, report: m.text };
+    case 'incident.resolved':
+      return { ...s, phase: 'walking', checkin: undefined, alert: undefined };
     case 'walk.reset':
-      return { ...initialState(), places: s.places, brightened: s.brightened, log: s.log, guardianJoined: s.guardianJoined };
+      return { ...initialState(), profile: s.profile, replay: s.replay, places: s.places, brightened: s.brightened, log: s.log, guardianJoined: s.guardianJoined };
     case 'walk.plan':
-      return { ...s, plan: m.plan };
+      if (m.plan.version && s.plan?.version && m.plan.version < s.plan.version) return s;
+      return { ...s, plan: m.plan, position: s.position && m.plan.version !== s.plan?.version ? { ...s.position, progress: 0 } : s.position };
     case 'walk.accept':
       return { ...s, choice: m.choice };
     case 'walk.start':
-      return { ...initialState(), plan: s.plan, choice: s.choice ?? 'streetwise', places: s.places, brightened: s.brightened, log: s.log, guardianJoined: s.guardianJoined, phase: 'walking', replay: m.replay, startedAt: ts, engineFrom: e.from, events: [{ ts, kind: 'start', label: 'Walk started' }] };
+      return { ...initialState(), profile: s.profile, plan: s.plan, choice: s.choice ?? 'streetwise', places: s.places, brightened: s.brightened, log: s.log, guardianJoined: s.guardianJoined, phase: 'walking', replay: m.replay, startedAt: ts, engineFrom: e.from, events: [{ ts, kind: 'start', label: 'Walk started' }] };
     case 'walk.position': {
       const last = s.trail[s.trail.length - 1];
       const moved = !last || Math.abs(last[0] - m.lngLat[0]) + Math.abs(last[1] - m.lngLat[1]) > 0.00003;
@@ -80,7 +104,7 @@ export function reduce(s: WalkState, e: Envelope): WalkState {
     case 'voice.say':
       return { ...s, say: { agent: m.agent, text: m.text, ts } };
     case 'checkin.ask':
-      return { ...s, phase: 'checkin', checkin: { text: m.text, reason: m.reason, deadline: m.deadline, windowSec: m.windowSec, ts }, events: push(s.events, { ts, kind: 'checkin', label: 'Check-in' }) };
+      return { ...s, phase: 'checkin', checkin: { incidentId: m.incidentId, text: m.text, reason: m.reason, deadline: m.deadline, windowSec: m.windowSec, ts }, events: push(s.events, { ts, kind: 'checkin', label: 'Check-in' }) };
     case 'checkin.reply': {
       const back = m.reply === 'fine';
       return {
@@ -88,14 +112,14 @@ export function reduce(s: WalkState, e: Envelope): WalkState {
         lastReply: { reply: m.reply, via: m.via, ts },
         checkin: back ? undefined : s.checkin,
         phase: back && (s.phase === 'checkin' || s.phase === 'escalated') ? 'walking' : s.phase,
-        alert: back && s.alert ? { ...s.alert, ackBy: s.alert.ackBy ?? 'walker', ackTs: s.alert.ackTs ?? ts } : s.alert,
+        alert: back ? undefined : s.alert,
         events: push(s.events, { ts, kind: back ? 'fine' : 'alert', label: back ? "I'm fine" : 'Help' }),
       };
     }
     case 'escalate':
       return { ...s, phase: 'escalated', checkin: undefined };
     case 'guardian.alert':
-      return { ...s, phase: 'escalated', alert: { reason: m.reason, lngLat: m.lngLat, where: m.where, ts }, events: push(s.events, { ts, kind: 'alert', label: 'Alert' }) };
+      return { ...s, phase: 'escalated', alert: { incidentId: m.incidentId, reason: m.reason, lngLat: m.lngLat, where: m.where, ts }, events: push(s.events, { ts, kind: 'alert', label: 'Alert' }) };
     case 'guardian.ack':
       return s.alert ? { ...s, alert: { ...s.alert, ackBy: m.by, ackTs: ts }, events: push(s.events, { ts, kind: 'ack', label: 'Guardian on it' }) } : s;
     case 'guardian.join':
@@ -112,7 +136,7 @@ export function reduce(s: WalkState, e: Envelope): WalkState {
     case 'agent.log':
       return { ...s, log: push(s.log, { id: e.id, ts: m.at ?? ts, agent: m.agent, to: m.to, text: m.text, reason: m.reason }, 200) };
     case 'walk.end':
-      return { ...s, phase: 'arrived', summary: m.summary, checkin: undefined, alert: undefined, events: push(s.events, { ts, kind: 'arrive', label: 'Arrived' }) };
+      return { ...s, phase: m.outcome === 'arrived' ? 'arrived' : 'ended', outcome: m.outcome, position: undefined, trail: [], summary: m.summary, checkin: undefined, alert: undefined, help: undefined, events: push(s.events, { ts, kind: 'arrive', label: m.outcome === 'arrived' ? 'Arrived' : 'Walk ended' }) };
     case 'audit.result':
       return { ...s, audit: { ranking: m.ranking, draft311: m.draft311, ts } };
     default:
@@ -123,6 +147,7 @@ export function reduce(s: WalkState, e: Envelope): WalkState {
 // ---------------------------------------------------------------- room store
 interface RoomStore {
   room: Room;
+  send: (m: Msg) => Envelope;
   state: WalkState;
   status: LinkStatus;
   listeners: Set<() => void>;
@@ -134,7 +159,8 @@ export function getRoomStore(walkId: string, role: Role): RoomStore {
   let st = stores.get(key);
   if (st) return st;
   const room = new Room(walkId, role);
-  const store: RoomStore = { room, state: initialState(), status: room.status, listeners: new Set() };
+  const store: RoomStore = { room, send: (m) => room.send(m.type === 'checkin.reply' || m.type === 'guardian.ack' ? { ...m, incidentId: store.state.checkin?.incidentId ?? store.state.alert?.incidentId } : m), state: initialState(), status: room.status, listeners: new Set() };
+  room.onReset(() => { store.state = initialState(); store.listeners.forEach(f => f()); });
   room.subscribe((e) => {
     store.state = reduce(store.state, e);
     store.listeners.forEach((f) => f());
@@ -155,7 +181,7 @@ export function useWalk(walkId: string, role: Role) {
   };
   const state = useSyncExternalStore(subscribe, () => store.state);
   const status = useSyncExternalStore(subscribe, () => store.status);
-  return { state, status, room: store.room, send: (m: Msg) => store.room.send(m) };
+  return { state, status, room: store.room, send: store.send };
 }
 
 // ---------------------------------------------------------------- demo data
@@ -181,7 +207,7 @@ export function loadDemoData(): Promise<DemoData> {
     const name = query.get('destinationName') ?? 'Destination';
     return Number.isFinite(lat) && Number.isFinite(lon) ? { lat, lon, name } : undefined;
   })() : undefined;
-  const saved = settings.destination;
+  const saved = query.get('engine') === 'local' ? undefined : settings.destination;
   const destination = requestedDestination ?? (saved ? { lat: saved.lngLat[1], lon: saved.lngLat[0], name: saved.name } : undefined);
   const key = demoKey(settings, destination ? { lat: destination.lat, lon: destination.lon, name: destination.name } : undefined, live);
   if (!dataPromises.has(key)) {
@@ -234,6 +260,10 @@ export interface Settings {
   thresholds: Thresholds;
   timeScale: number; // demo replay speed (1 = real time)
   walkerName: string;
+  walkerPhone?: string;
+  consent?: boolean;
+  mode?: 'demo' | 'live';
+  preferredChoice?: 'streetwise' | 'usual';
   destination?: { name: string; lngLat: [number, number] };
   origin?: { name: string; lngLat: [number, number] };
   depart?: { day: number; minute: number; label: string };
@@ -262,5 +292,5 @@ export function saveSettings(s: Settings) {
   dataPromises.clear();
 }
 
-export const isGatewayMode = () => import.meta.env.VITE_ENGINE === 'off' || new URLSearchParams(location.search).get('engine') === 'off';
-export const walkIdFromUrl = (fallback?: string) => new URLSearchParams(location.search).get('walk') || fallback || (isGatewayMode() ? 'live-demo' : 'demo');
+export const isGatewayMode = () => new URLSearchParams(location.search).get('engine') !== 'local';
+export const walkIdFromUrl = (fallback?: string) => new URLSearchParams(location.search).get('walk') || fallback || currentSession()?.id || 'demo';

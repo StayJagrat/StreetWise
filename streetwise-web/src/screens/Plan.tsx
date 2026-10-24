@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import PickerMap from '../components/PickerMap';
+import { createSession } from '../lib/session';
 import { Button, Icon, Mascot } from '../components/ui';
 import { inCity, LOCAL_DESTINATIONS, nameForPin, searchPlaces, type DestinationResult } from '../lib/search';
 import { loadSettings, primeDemoData, saveSettings } from '../lib/store';
@@ -55,6 +56,7 @@ export default function Plan() {
   const [searching, setSearching] = useState(false);
   const [plan, setPlan] = useState<DemoData | null>(null);
   const [planning, setPlanning] = useState(false);
+  const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pick, setPick] = useState<'fast' | 'best'>('best');
   const [sheetH, setSheetH] = useState(360);
@@ -74,6 +76,7 @@ export default function Plan() {
     if (q.length < 2) { setResults(LOCAL_DESTINATIONS.filter((d) => d.name.toLowerCase().includes(q.toLowerCase()))); setSearching(false); return; }
     const c = new AbortController();
     setSearching(true);
+    setResults([]);
     const t = window.setTimeout(() => {
       searchPlaces(q, c.signal).then(setResults).catch(() => undefined).finally(() => { if (!c.signal.aborted) setSearching(false); });
     }, 160);
@@ -136,12 +139,18 @@ export default function Plan() {
   const extra = stats ? stats.streetwise.minutes - stats.shortest.minutes : 0;
   const same = !!plan && plan.options?.length === 1;
 
-  const review = () => {
+  const review = async () => {
     if (!from || !to || !plan) return;
-    const next = { ...saved, origin: from, destination: to, depart: when };
+    const next = { ...saved, origin: from, destination: to, depart: when, preferredChoice: pick === 'fast' ? 'usual' as const : 'streetwise' as const };
     saveSettings(next);
     primeDemoData(next, plan);
-    nav('/walk');
+    if (!next.consent) { nav('/setup'); return; }
+    setCreating(true);
+    try {
+      const access = await createSession({ ...next, mode: next.mode ?? 'demo', consent: !!next.consent, origin: from.name, destination: to.name });
+      nav(`/walk?walk=${encodeURIComponent(access.id)}`);
+    } catch (e) { setError((e as Error).message); }
+    finally { setCreating(false); }
   };
 
   const row = (field: Field, spot: Spot | null, placeholder: string) => (
@@ -171,7 +180,7 @@ export default function Plan() {
         <div className="chip"><span className="dot dot--live" />San Francisco · {when.label}</div>
       </div>
 
-      <section className="sheet plan__sheet" ref={sheet} aria-label="Plan a walk">
+      <section id="main-content" className="sheet plan__sheet" ref={sheet} aria-label="Plan a walk">
         <div className="sheet__handle" aria-hidden />
         <div className="plan__head">
           <Mascot agent="scout" state={planning ? 'thinking' : plan ? 'done' : 'idle'} size={34} />
@@ -224,10 +233,10 @@ export default function Plan() {
             <p className="plan__why">
               {same
                 ? 'The fastest route is already the best one I found at this hour.'
-                : `Streetwise scores ${gain >= 0 ? '+' : ''}${gain} points higher for ${extra >= 0 ? '+' : ''}${extra.toFixed(1)} min. The longest stretch with nothing open drops from ${stats.shortest.longestEmptyM} m to ${stats.streetwise.longestEmptyM} m.`}
+                : `Streetwise scores ${gain >= 0 ? '+' : ''}${gain} points higher for ${extra >= 0 ? '+' : ''}${extra.toFixed(1)} min. Longest gap between listed open places: ${stats.streetwise.longestEmptyM} m, versus ${stats.shortest.longestEmptyM} m on the fastest route.`}
             </p>
             <div className="t-caption" style={{ fontSize: 11 }}>Compared with typical walks nearby at this hour. Conditions, not a safety rating.</div>
-            <Button kind="primary" block onClick={review}>Review with Scout</Button>
+            <Button kind="primary" block disabled={creating || planning} onClick={() => void review()}>{creating ? 'Preparing your companion...' : 'Review with Scout'}</Button>
           </>
         )}
         {!plan && !planning && !error && from && to && <div className="t-caption">Scoring starts as soon as both pins are set.</div>}

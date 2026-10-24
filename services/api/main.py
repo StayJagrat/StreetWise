@@ -9,19 +9,39 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+# Capability-bearing URLs must not leak into request logs.
+import logging
+import re
+class PrivateUrlFilter(logging.Filter):
+    def filter(self, record):
+        record.msg = re.sub(r"(token=)[^&\s\"]+", r"\1[redacted]", record.getMessage())
+        record.args = ()
+        return True
+logging.getLogger("uvicorn.error").addFilter(PrivateUrlFilter())
+logging.getLogger("uvicorn.access").addFilter(PrivateUrlFilter())
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "services" / "engine"))
+sys.path.insert(0, str(Path(__file__).parent))
+from dotenv import load_dotenv
+load_dotenv(ROOT / ".env.server.local")
+load_dotenv(ROOT / ".env")
+import pwa_gateway
+from providers import router as providers_router
 from streetwise_engine.engine import Engine  # noqa: E402
 from demo_data import build_demo_data  # noqa: E402
 from live_walk import LiveWalk  # noqa: E402
 from vision import router as vision_router  # noqa: E402
 
 app = FastAPI(title="Streetwise API", version="0.1.0")
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.include_router(vision_router)
+app.include_router(pwa_gateway.router)
+app.include_router(providers_router)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 engine: Engine | None = None
 last_route: dict[str, dict] = {}
@@ -50,6 +70,7 @@ def make_emit(session: str, loop):
 async def boot():
     global engine
     engine = await run_in_threadpool(Engine)
+    await pwa_gateway.initialize(engine)
 
 
 class LatLon(BaseModel): lat: float; lon: float
@@ -62,7 +83,12 @@ class SessionReq(BaseModel): session: str = "demo"
 
 
 @app.get("/api/health")
-async def health(): return dict(ok=engine is not None, boot_seconds=engine.boot_seconds if engine else None)
+async def health(): return dict(ok=engine is not None, boot_seconds=engine.boot_seconds if engine else None, persistence="local_durable", supabase=pwa_gateway.repository.cloud_status if pwa_gateway.repository else "starting")
+
+
+@app.on_event("shutdown")
+async def stop_gateway():
+    await pwa_gateway.shutdown()
 
 
 @app.get("/api/meta")
@@ -292,80 +318,15 @@ async def ws(sock: WebSocket, session: str):
     finally: hub.subs[session].discard(q)
 
 
-# Abhishek's PWA uses one room per walk and sends typed envelopes. Keep this
-# separate from the earlier trace stream above until its callers are retired.
-class WalkRoom:
-    def __init__(self):
-        self.clients: set[WebSocket] = set()
-        self.history: deque[dict] = deque(maxlen=400)
-        self.lock = asyncio.Lock()
-
-    async def publish(self, env: dict, exclude: WebSocket | None = None):
-        kind = env["msg"].get("type")
-        async with self.lock:
-            if kind == "walk.reset":
-                self.history = deque((e for e in self.history if e["msg"].get("type") in ("place.update", "guardian.join")), maxlen=400)
-            elif kind == "walk.start":
-                self.history = deque((e for e in self.history if e["msg"].get("type") in ("agent.log", "walk.plan", "place.update", "guardian.join")), maxlen=400)
-            elif kind == "walk.position":
-                self.history = deque((e for e in self.history if e["msg"].get("type") != "walk.position"), maxlen=400)
-            self.history.append(env)
-            for peer in list(self.clients):
-                if peer is exclude:
-                    continue
-                try:
-                    await peer.send_json(env)
-                except (RuntimeError, WebSocketDisconnect):
-                    self.clients.discard(peer)
-
-
-walk_rooms: dict[str, WalkRoom] = {}
-live_walks: dict[str, LiveWalk] = {}
-
-
-@app.websocket("/ws")
-async def ws_walk(sock: WebSocket, walk: str = "demo", role: str = "unknown"):
-    del role  # The role is part of the client URL; envelopes carry their sender.
-    room = walk_rooms.setdefault(walk, WalkRoom())
-    await sock.accept()
-    async with room.lock:
-        await sock.send_json({"kind": "history", "envelopes": list(room.history)})
-        room.clients.add(sock)
-    try:
-        while True:
-            try:
-                env = json.loads(await sock.receive_text())
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(env, dict) or env.get("walkId") != walk or not isinstance(env.get("msg"), dict):
-                continue
-            kind = env["msg"].get("type")
-            await room.publish(env, exclude=sock)
-            # The local replay sends its own envelopes as `engine`. Only a
-            # walker-originated accept activates server-side agent responses.
-            if env.get("from") in ("walker", "room") and kind in ("walk.accept", "audit.run") and walk not in live_walks:
-                live_walks[walk] = LiveWalk(walk, engine, room.publish)
-            live = live_walks.get(walk)
-            if live and env.get("from") != "engine":
-                replay_places = kind == "walk.accept" and not live.routes
-                await live.handle(env)
-                if replay_places:
-                    # A shop may have updated hours before the walker joined.
-                    for prior in list(room.history):
-                        if prior["msg"].get("type") == "place.update":
-                            await live.place_update(prior["msg"].get("place"))
-    except WebSocketDisconnect:
-        pass
-    finally:
-        async with room.lock:
-            room.clients.discard(sock)
-
-
 WEB = ROOT / "streetwise-web" / "dist"
 if WEB.exists():                                   # single-process deploy: the built PWA is served from the same origin
     app.mount("/assets", StaticFiles(directory=WEB / "assets"), name="assets")
 
     @app.get("/{path:path}")
     async def spa(path: str):
-        f = WEB / path
-        return FileResponse(f if f.is_file() else WEB / "index.html")
+        if path.startswith(("api/", "ws")):
+            raise HTTPException(404, "Unknown endpoint")
+        f = (WEB / path).resolve()
+        if not f.is_relative_to(WEB.resolve()):
+            raise HTTPException(404, "Not found")
+        return FileResponse(f if f.is_file() else WEB / "index.html", headers={"Cache-Control": "no-cache", "Referrer-Policy": "no-referrer"})

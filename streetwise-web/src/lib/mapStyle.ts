@@ -23,6 +23,17 @@ export const UI_COLORS: Record<Theme, Record<string, string>> = {
 
 export function buildStyle(theme: Theme): StyleSpecification {
   const c = MAP_COLORS[theme];
+  if (import.meta.env.VITE_BASEMAP !== 'pmtiles') return {
+    version: 8,
+    glyphs: '/fonts/{fontstack}/{range}.pbf',
+    sources: { streets: { type: 'geojson', data: '/data/sf-streets.geojson', attribution: '© OpenStreetMap contributors', tolerance: 1 } },
+    layers: [
+      { id: 'land', type: 'background', paint: { 'background-color': c.land } },
+      { id: 'street-casing', type: 'line', source: 'streets', paint: { 'line-color': c.casing, 'line-width': ['interpolate',['linear'],['zoom'],10,.5,15,5,18,17] } },
+      { id: 'streets', type: 'line', source: 'streets', paint: { 'line-color': ['case',['get','major'],c.major,c.minor], 'line-width': ['interpolate',['linear'],['zoom'],10,.3,15,3,18,13] } },
+      { id: 'street-labels', type: 'symbol', source: 'streets', minzoom: 13.5, layout: { 'symbol-placement':'line', 'text-field':['get','name'], 'text-font':['Noto Sans Regular'], 'text-size':11, 'symbol-spacing':350 }, paint: { 'text-color':c.label, 'text-halo-color':c.halo, 'text-halo-width':2 } },
+    ],
+  };
   const base = namedFlavor(theme === 'night' ? 'dark' : 'light');
   const flavor = {
     ...base,

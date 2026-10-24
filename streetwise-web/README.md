@@ -1,137 +1,42 @@
-# Streetwise — web (PWA)
+# Streetwise PWA
 
-## JP persistence work
+The existing Figma-based React/Vite app, extended on **JP** with connected walk sessions, onboarding, privacy, Claude answers and offline assets. Keep using the established tokens and mascots.
 
-The `JP` branch adds optional server-only Supabase storage to the existing demo relay. See the [repository workflow](../docs/WORKFLOW.md) and [Supabase setup guide](../docs/SUPABASE.md). Run `npm test` and `npm run build` to verify the foundation. Without Supabase configuration, the demo still uses in-memory storage.
+| Route | Purpose |
+| --- | --- |
+| `/` | Animated welcome, overview, install prompt and current walk |
+| `/account` | Configured Supabase Google OAuth or guest entry |
+| `/setup` | Walker/guardian details, replay vs device GPS, thresholds and consent |
+| `/plan` | Start/destination search, departure time, comparison and route evidence |
+| `/walk?walk=...` | Private walker session, turns, check-ins, help requests and observations |
+| `/guardian/:walk` | Private invitation, live status, alerts and receipt acknowledgment |
+| `/shop` | Private simulated business view for the selected demo request |
+| `/room` | Private control room, deterministic replay, evidence, audit and agent log |
+| `/privacy` | Sharing, voice and prototype limits |
+| `/hub` | Development navigation |
 
-The development relay now validates messages and accepts GPS replay only. For live location, point `VITE_GATEWAY_URL` at an authenticated gateway. Guardian consent, scoped access and backend safety timers are the next milestone; this relay is for fictional demo data.
+## Develop and build
 
-The front end for Streetwise, built from the Figma file *Streetwise — Cal Hacks 13.0*.
-It is one React + Vite PWA with five screens that all join the same walk room:
-
-| Route | Who | What |
-|---|---|---|
-| `/walk` | Walker, demo phone + earbuds | Scout's route offer → walking (street-sign turns, voice) → check-in → guardian alerted → arrival |
-| `/guardian/:walk` | Judge's phone via QR | Live map, full-screen alert, "I'm on it", handoff packet. No install, no login |
-| `/shop` | Teammate as shopkeeper | Simulated hours update for a place on the route |
-| `/room` | Laptop on stage | Map, agent feed with reasons, why-this-street card, darkness debt, replay timeline, guardian QR |
-| `/setup` | Walker, once | Guardian + standing orders (stop 90 s, reply 45 s), "never calls 911" |
-
-`/` is a hub with links to all of them.
-
-## Run it
+Use Node 22.17+. Run the Python gateway on port 8000 (see the root README), then:
 
 ```bash
-npm install
-npm run assets        # regenerates mascots and icons
-../.venv/bin/python ../scripts/export_demo.py  # from streetwise-web: refreshes the engine-backed offline JSON
-cd ../services/api && ../../.venv/bin/uvicorn main:app --port 8000 --reload --reload-dir . --reload-dir ../engine
-# In another terminal:
-cd streetwise-web && npm run dev   # app on :5173, proxies /ws to the API
+npm ci
+npm run dev
+npm test
+npm run build
+npm audit
 ```
 
-PWAs need HTTPS for the mic, location and install. Put one tunnel in front of Vite and everything rides it — the app and the `/ws` room:
+Vite on 5173 proxies `/api` and `/ws` to FastAPI. A production build is served by FastAPI from `dist/`, so app/API/WebSocket share one origin. HTTPS is required on phones for GPS, microphone and install; loopback works locally.
 
-```bash
-cloudflared tunnel --url http://localhost:5173     # or: ngrok http 5173
-```
+## Modes
 
-Open `https://<tunnel>/room` on the laptop, scan the QR with a second phone (guardian), open `/walk` on the demo phone and `/shop` on a teammate's phone.
+The normal app uses the authenticated gateway. Setup selects either **server GPS replay** or **foreground device GPS**. Replay and simulated places are visibly labelled. Reloading reconnects to the same room and recovers its current versioned plan and deadlines; it does not reset the walk.
 
-For the demo build: `npm run build && npm run preview` (port 4173, same `/ws` proxy).
+`/walk?engine=local&walk=offline-demo` is the separate cached browser replay. It loads the bundled fixture regardless of a previously searched destination. It needs no API, never sends real GPS and cannot provide connected guardian/Claude features. Browser speech availability depends on the device/browser.
 
-## Demo mode vs live mode
+MapLibre uses a bundled module worker and an offline GeoJSON SF street basemap by default. `VITE_BASEMAP=pmtiles` optionally selects the team's separately prepared local tile archive. The default does not depend on an unavailable external tile API. The manifest and service worker cache app screens, fonts, street geometry, icons and replay data. Updates wait for explicit user action instead of reloading during a walk.
 
-**Demo mode (default)** — `src/lib/engine.ts` replays the five agent roles from cached route data. The route and score work without the API; map tiles need a connection or a prior cache:
+Server secrets belong in the repository's ignored `.env.server.local`, outside Vite. `VITE_GATEWAY_URL` can point at a separate WebSocket gateway if required; same-origin hosting is simpler. The browser receives only public Supabase auth configuration and private role links, never service credentials.
 
-- GPS is replayed along the route, with the "DEMO · GPS REPLAY · ×N" tape always visible.
-- One stop is injected on the engine-selected stretch. After the stop threshold the Watcher asks; if there's silence, the Rescuer alerts the guardian.
-- The simulated shop toggle re-scores the fixed routes using an engine-calculated what-if cached for offline replay.
-- Replay speed is set in `/setup` (×6 by default; thresholds are scaled by the same factor and the UI says so).
-- The control-room gateway replay uses a labeled ×30 playback and scales its Watcher thresholds for a short stage demo.
-- Reloading `/walk` starts a fresh walk (`walk.reset`).
-- If the walker phone dies, press **Start demo walk here** in the control room.
-
-**Gateway mode** — `VITE_ENGINE=off` (or `?engine=off`): the frontend loads `/api/demo` from the backend, or `/api/route-demo` for a selected destination. Walk, guardian, shop, and control-room screens share `/ws`; the server runs the same deterministic Python route and Watcher logic. If route data is missing, the selected route shows an error instead of substituting another corridor.
-
-## Wiring the gateway (Brain)
-
-`src/lib/types.ts` is the contract. Every message is an envelope:
-
-```json
-{ "id": "…", "walkId": "demo", "ts": 1761373440000, "from": "engine|walker|guardian|shop|room|gateway", "msg": { "type": "…", … } }
-```
-
-The FastAPI gateway (`services/api/main.py`) now:
-
-1. Accept `wss://…/ws?walk=<id>&role=<role>`.
-2. Forward every envelope to everyone else in that walk's room.
-3. Sends `{ "kind": "history", "envelopes": [...] }` to a late joiner.
-
-`relay/server.mjs` remains an optional standalone development relay. For a separately hosted API, set `VITE_GATEWAY_URL=wss://your-gateway/ws`.
-
-Message types the agents produce:
-
-- `walk.plan`
-- `voice.say`
-- `checkin.ask`
-- `escalate`
-- `guardian.alert`
-- `agent.log` (with `reason`, which shows in the control room)
-- `walk.end`
-- `audit.result`
-
-The client produces:
-
-- `walk.accept`, `walk.start`, `walk.position`
-- `checkin.reply` (voice or tap)
-- `guardian.join`, `guardian.ack`
-- `place.update`
-- `audit.run`
-
-## Voice (Voice role)
-
-`src/lib/voice.ts` uses browser speech as the stopgap. To use Cartesia instead:
-
-- Swap the output with `setSpeaker({ speak, stop })`, using Sonic streamed via the gateway into Web Audio.
-- Swap the input with `setListenerFactory(...)`, using Ink with turn detection.
-
-The "Go this way" tap already unlocks audio, starts the mic and requests the screen wake lock. Speaking over the app stops playback.
-
-## Map (City role)
-
-The map uses MapLibre GL with a self-hosted Protomaps PMTiles archive when available. Run `./scripts/fetch_tiles.sh` from the repository root to copy the cached San Francisco extract from `legacy/web/` (the archive stays ignored). The style uses the Figma `map/*` variables: Night for the walker and control room, Day for the guardian and shop. The service worker caches tiles; the route, lamps and places still draw if map tiles are unavailable.
-
-`public/data/demo-route.json` is generated by `.venv/bin/python scripts/export_demo.py` from the deterministic Python engine and cached pilot data. `GET /api/demo` serves the same shape for live mode. The corridor is Powell St BART → Transamerica Pyramid area, Friday 11:04 PM:
-
-- OSM street graph geometry for the scored route and the shortest path
-- scored stretches with OSM and SF 311 streetlight evidence, plus listed hours
-- real OSM places; the shopkeeper interaction is labelled simulated
-- current route stats from the engine: 63 vs 57, 230 m vs 510 m longest stretch without a listed open place or help point, +3.1 min. Real matched hours evidence changes these numbers; re-run the export script after changing the cache.
-- darkness-debt ranking from modeled trips, never observed foot traffic
-
-Place hours are missing for some locations and count as closed. A rules-based parser filled 153 OSM schedules from real Apify source results; unmatched shops remain simulated. The mapped endpoint is the nearest cached street node, about 58 m from the Pyramid.
-
-To show per-segment scores in the control room, drop a `public/data/segments.geojson`: LineString features with `properties.score` (0–100) and `properties.confidence`. Brighter and wider means a better score. It is never drawn as a crime heatmap.
-
-## Honesty rules baked into the UI
-
-- Demo tape on every replay.
-- "Simulated" tag on fake shops.
-- 311 reports are drafts only, with no invented case IDs.
-- The walker, guardian and setup screens say plainly that Streetwise never calls 911.
-- The guardian sees location only during an active walk.
-- No mascots on the alert screens.
-
-## Design source
-
-Tokens in `src/styles/tokens.css` mirror the Figma variable collection *Streetwise* (Night/Day).
-
-Fonts:
-
-- Bricolage Grotesque (display)
-- Instrument Sans (body)
-- Barlow Condensed (signs and numbers)
-- DM Mono (logs)
-
-The mascots in `public/mascots/` are generated from the same SVG source as the Figma *Mascot* component set: Scout (pigeon), Watcher (raccoon), Rescuer (sea lion), Reporter (crow) and Night Auditor (moth), each with four states.
+The old Node relay remains under `relay/` for its foundation tests. It is not the current app gateway. See [workflow](../docs/WORKFLOW.md) and [Supabase](../docs/SUPABASE.md).

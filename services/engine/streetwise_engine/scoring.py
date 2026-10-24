@@ -33,9 +33,9 @@ class Ctx:
 
 def place_open(W: World, pl, minute, ctx: Ctx):
     until = ctx.overrides.get(pl["id"])
-    if until is not None and minute < until: return True
+    if until is not None: return minute < until
     if pl["help"] and pl["cat"] in {"police", "fire_station", "hospital"}: return True
-    return bool(is_open(pl["hours"], ctx.day, int(minute) % 1440))
+    return bool(is_open(pl["hours"], (ctx.day + int(minute) // 1440) % 7, int(minute) % 1440))
 
 
 def sample_route(W: World, path):
@@ -133,7 +133,7 @@ class Norm:
     @classmethod
     def build(cls, W: World, ctx: Ctx, cell):
         f = CACHE / "norms" / f"norm_{cell[0]}_{cell[1]}_{ctx.day}_{ctx.minute // 30}.json"
-        if f.exists(): d = json.loads(f.read_text()); return cls(d["lo"], d["hi"])
+        if f.exists(): d = json.loads(f.read_text(encoding="utf-8")); return cls(d["lo"], d["hi"])
         refs = cls.reference_paths(W, cell)
         ms = [metrics(W, Ctx(ctx.day, (ctx.minute // 30) * 30), p) for p in refs]; lo, hi = {}, {}
         for k in cls.KEYS: v = np.array([m[k] for m in ms]) if ms else np.zeros(1); lo[k], hi[k] = float(np.percentile(v, 10)), float(np.percentile(v, 90))

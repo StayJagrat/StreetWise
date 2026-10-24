@@ -26,7 +26,7 @@ def _key(name: str) -> str | None:
     path = ROOT / ".env"
     if not path.exists():
         return None
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         if line.lstrip().startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)

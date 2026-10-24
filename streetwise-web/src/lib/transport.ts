@@ -1,125 +1,112 @@
 import type { Envelope, Msg } from './types';
-
-// One Room per walk. It talks to the gateway over WebSocket when it can,
-// and to other tabs on the same device over BroadcastChannel always.
-// Envelopes are de-duplicated by id, so both paths can run at once.
-//
-// Gateway URL resolution:
-//   1. VITE_GATEWAY_URL (e.g. wss://gateway.example.com/ws)
-//   2. same origin /ws  (the dev relay, proxied by Vite — works through one HTTPS tunnel)
-// Wire format: the gateway/relay forwards Envelope JSON to everyone in the walk's room,
-// and may send {kind:"history", envelopes:[...]} to a client that just joined.
+import { tokenFor } from './session';
 
 export type Role = Envelope['from'];
-export type LinkStatus = 'connecting' | 'online' | 'local';
+export type LinkStatus = 'connecting' | 'online' | 'local' | 'blocked';
 type Listener = (e: Envelope) => void;
-
-const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+const uid = () => crypto.randomUUID();
 
 export class Room {
   readonly walkId: string;
   readonly role: Role;
   status: LinkStatus = 'connecting';
+  error = '';
   private ws?: WebSocket;
   private bc?: BroadcastChannel;
   private seen = new Set<string>();
   private listeners = new Set<Listener>();
+  private resets = new Set<() => void>();
   private statusListeners = new Set<(s: LinkStatus) => void>();
   private retry = 0;
   private closed = false;
   private outbox: string[] = [];
+  private local = new URLSearchParams(location.search).get('engine') === 'local';
 
   constructor(walkId: string, role: Role) {
     this.walkId = walkId;
     this.role = role;
-    if ('BroadcastChannel' in window) {
-      this.bc = new BroadcastChannel(`streetwise:${walkId}`);
-      this.bc.onmessage = (ev) => this.receive(ev.data as Envelope);
-    }
-    this.connect();
-  }
-
-  private url(): string {
-    const env = import.meta.env.VITE_GATEWAY_URL as string | undefined;
-    const base = env && env.length > 0 ? env : `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
-    const sep = base.includes('?') ? '&' : '?';
-    return `${base}${sep}walk=${encodeURIComponent(this.walkId)}&role=${this.role}`;
+    if (this.local) {
+      if ('BroadcastChannel' in window) {
+        this.bc = new BroadcastChannel(`streetwise:${walkId}`);
+        this.bc.onmessage = ev => this.receive(ev.data as Envelope);
+      }
+      this.status = 'local';
+    } else this.connect();
   }
 
   private setStatus(s: LinkStatus) {
     this.status = s;
-    this.statusListeners.forEach((f) => f(s));
+    this.statusListeners.forEach(f => f(s));
   }
 
   private connect() {
     if (this.closed) return;
-    let ws: WebSocket;
-    try {
-      ws = new WebSocket(this.url());
-    } catch {
-      this.setStatus('local');
+    const token = tokenFor(this.walkId, this.role);
+    if (!token) {
+      this.error = 'This walk link is missing or expired. Start a new walk or ask the walker for a fresh link.';
+      this.setStatus('blocked');
       return;
     }
+    const base = import.meta.env.VITE_GATEWAY_URL || `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
+    const query = new URLSearchParams({ walk: this.walkId, role: this.role, token });
+    const ws = new WebSocket(`${base}${base.includes('?') ? '&' : '?'}${query}`);
     this.ws = ws;
-    const giveUp = window.setTimeout(() => {
-      if (ws.readyState !== WebSocket.OPEN) {
-        this.setStatus('local');
-      }
-    }, 2500);
-    ws.onopen = () => {
-      window.clearTimeout(giveUp);
-      this.retry = 0;
-      this.setStatus('online');
-      this.outbox.splice(0).forEach((m) => ws.send(m));
-    };
-    ws.onmessage = (ev) => {
+    ws.onmessage = ev => {
       try {
         const data = JSON.parse(ev.data);
-        if (data?.kind === 'history' && Array.isArray(data.envelopes)) data.envelopes.forEach((e: Envelope) => this.receive(e));
-        else this.receive(data as Envelope);
-      } catch {
-        /* ignore malformed */
-      }
+        if (data.kind === 'history') {
+          this.seen.clear();
+          this.resets.forEach(f => f());
+          if (data.profile) this.receive({ id: uid(), walkId: this.walkId, ts: Date.now(), from: 'gateway', msg: { type: 'session.info', mode: data.mode, profile: data.profile } });
+          data.envelopes.forEach((e: Envelope) => this.receive(e));
+          this.error = '';
+          this.retry = 0;
+          this.setStatus('online');
+          this.outbox.splice(0).forEach(m => ws.send(m));
+        } else if (data.kind === 'error') {
+          this.error = data.message;
+          this.receive({ id: uid(), walkId: this.walkId, ts: Date.now(), from: 'gateway', msg: { type: 'gateway.error', message: data.message } });
+          this.statusListeners.forEach(f => f(this.status));
+        } else this.receive(data as Envelope);
+      } catch { /* malformed server message is ignored */ }
     };
-    ws.onclose = () => {
-      window.clearTimeout(giveUp);
+    ws.onclose = ev => {
       if (this.closed) return;
+      if (ev.code === 4403) {
+        this.error = 'This walk link is invalid or expired. Ask for a new link.';
+        this.setStatus('blocked');
+        return;
+      }
+      this.error = 'Connection lost. Guardian updates cannot be delivered until the connection returns.';
       this.setStatus('local');
-      const wait = Math.min(15000, 1000 * 2 ** this.retry++);
-      window.setTimeout(() => this.connect(), wait);
+      window.setTimeout(() => this.connect(), Math.min(15000, 1000 * 2 ** this.retry++));
     };
     ws.onerror = () => ws.close();
   }
 
   private receive(e: Envelope) {
-    if (!e || !e.id || e.walkId !== this.walkId || this.seen.has(e.id)) return;
+    if (!e?.id || e.walkId !== this.walkId || this.seen.has(e.id)) return;
     this.seen.add(e.id);
-    this.listeners.forEach((f) => f(e));
+    if (this.seen.size > 4000) this.seen = new Set([e.id]);
+    this.listeners.forEach(f => f(e));
   }
 
   send<M extends Msg>(msg: M, from: Role = this.role): Envelope<M> {
     const env: Envelope<M> = { id: uid(), walkId: this.walkId, ts: Date.now(), from, msg };
-    this.receive(env);
+    if (this.local) {
+      this.receive(env);
+      this.bc?.postMessage(env);
+      return env;
+    }
     const raw = JSON.stringify(env);
-    this.bc?.postMessage(env);
-    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(raw);
-    else if (this.status === 'connecting') this.outbox.push(raw);
+    if (this.ws?.readyState === WebSocket.OPEN && this.status === 'online') this.ws.send(raw);
+    else if (this.status !== 'blocked' && msg.type !== 'walk.position') {
+      this.outbox = [...this.outbox.slice(-19), raw];
+    }
     return env;
   }
-
-  subscribe(f: Listener): () => void {
-    this.listeners.add(f);
-    return () => this.listeners.delete(f);
-  }
-
-  onStatus(f: (s: LinkStatus) => void): () => void {
-    this.statusListeners.add(f);
-    return () => this.statusListeners.delete(f);
-  }
-
-  close() {
-    this.closed = true;
-    this.ws?.close();
-    this.bc?.close();
-  }
+  onReset(f: () => void) { this.resets.add(f); return () => { this.resets.delete(f); }; }
+  subscribe(f: Listener) { this.listeners.add(f); return () => { this.listeners.delete(f); }; }
+  onStatus(f: (s: LinkStatus) => void) { this.statusListeners.add(f); return () => { this.statusListeners.delete(f); }; }
+  close() { this.closed = true; this.ws?.close(); this.bc?.close(); }
 }

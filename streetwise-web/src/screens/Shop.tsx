@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { Mascot, Toggle } from '../components/ui';
+import { Button, LinkBadge, Mascot, Toggle } from '../components/ui';
 import { clock } from '../lib/format';
 import { loadSettings, mergedPlaces, useDemoData, useWalk, walkIdFromUrl } from '../lib/store';
 import './shop.css';
@@ -12,10 +12,11 @@ const TIMES = ['22:00', '22:30', '23:00', '23:30', '00:00', '00:30', '01:00', '0
 export default function Shop() {
   const { place: routePlace } = useParams();
   const walkId = walkIdFromUrl();
-  const { data, error } = useDemoData();
-  const placeId = routePlace ?? data?.whatIf?.placeId ?? data?.places[0]?.id ?? '';
+  const { data: cachedData, error } = useDemoData();
   const settings = useMemo(loadSettings, []);
   const { state, send, status } = useWalk(walkId, 'shop');
+  const data = state.plan?.data ?? cachedData;
+  const placeId = state.help?.place?.id ?? routePlace ?? data?.whatIf?.placeId ?? data?.places.find(p => p.openUntil === 'closed')?.id ?? data?.places[0]?.id ?? '';
   const [toast, setToast] = useState<number | null>(null);
 
   const place = data ? mergedPlaces(data, state).find((p) => p.id === placeId) : undefined;
@@ -54,7 +55,10 @@ export default function Shop() {
   return (
     <div className="screen screen--scroll shop" data-theme="day">
       <Storefront open={open} />
-      <main className="shop__body">
+      <main className="shop__body" id="main-content">
+        <LinkBadge status={status} />
+        {state.help?.status === 'waiting' && <section className="card" style={{ padding: 20 }} aria-label="Request to wait"><h2 className="t-title">Someone needs a place to wait.</h2><p>This simulated request is for {state.help.place?.name}. Accept only if you can receive them.</p><div className="btn-row"><Button kind="secondary" disabled={status !== 'online'} onClick={() => send({ type: 'help.respond', requestId: state.help!.id, accepted: false })}>Decline</Button><Button kind="primary" disabled={status !== 'online'} onClick={() => send({ type: 'help.respond', requestId: state.help!.id, accepted: true })}>Accept request</Button></div></section>}
+        {state.help?.status === 'accepted' && <p className="status-note" role="status">Request accepted. The walker has updated guidance to this simulated place.</p>}
         <div className="shop__head">
           <div>
             <h1 className="t-display">{place.name}</h1>
@@ -105,7 +109,7 @@ export default function Shop() {
             <Mascot agent="scout" state="done" size={48} />
             <div>
               <div className="t-headline" style={{ fontSize: 15 }}>Your hours update is visible to nearby walkers.</div>
-              <div className="shop__toast-sub">{walking ? `Scout kept ${settings.walkerName}'s walk past your door · just now` : 'Scout will offer it to the next walker · just now'}</div>
+              <div className="shop__toast-sub">{walking ? `Scout is updating ${settings.walkerName}'s route · just now` : 'Scout will offer it to the next walker · just now'}</div>
             </div>
           </div>
         )}

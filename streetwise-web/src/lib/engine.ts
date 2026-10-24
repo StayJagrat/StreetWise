@@ -233,6 +233,12 @@ export class DemoEngine {
       return;
     }
     if (e.from === 'engine' || this.passive) return;
+    if (m.type === 'walk.end') {
+      this.stopTimers();
+      this.state = 'done';
+      this.running = false;
+      return;
+    }
     if (m.type === 'checkin.reply') {
       if (m.reply === 'fine' && (this.state === 'asking' || this.state === 'escalated' || this.state === 'stopped')) {
         if (this.state === 'escalated') this.log('rescuer', 'Walker said they are fine. Guardian alert cleared.', 'Check-in answered after escalation.', 'Guardian');
@@ -244,7 +250,7 @@ export class DemoEngine {
     }
     if (m.type === 'guardian.ack' && this.state === 'escalated') {
       this.say('rescuer', `${m.by} is on it.`);
-      this.log('rescuer', `${m.by} cleared the alert: "I'm on it".`, 'Guardian responded.', this.settings.walkerName);
+      this.log('rescuer', `${m.by} acknowledged receipt: "I'm on it".`, 'Guardian responded.', this.settings.walkerName);
     }
     if (m.type === 'place.update') this.onPlaceUpdate(m.place);
     if (m.type === 'audit.run') this.runAudit();

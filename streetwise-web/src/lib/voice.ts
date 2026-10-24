@@ -1,12 +1,11 @@
 // Voice I/O for the walker.
-// Default speaker/listener use the browser's speech APIs — the stopgap in the build doc.
-// The Voice teammate swaps in Cartesia (Ink in, Sonic out via the gateway) with
-// setSpeaker() / setListenerFactory() without touching any screen code.
+// Speech uses optional browser APIs. The user chose no Cartesia integration.
+// setSpeaker() / setListenerFactory() preserve a provider-independent boundary.
 
-export type Intent = 'fine' | 'help';
+export type Intent = 'fine' | 'help' | 'wait' | 'replan' | 'end';
 export type Speaker = { speak: (text: string) => Promise<void>; stop: () => void };
 export type ListenerHandle = { stop: () => void };
-export type ListenerFactory = (onIntent: (i: Intent, transcript: string) => void, onSpeech: () => void) => ListenerHandle | null;
+export type ListenerFactory = (onIntent: (i: Intent, transcript: string) => void, onSpeech: () => void, onError?: (message: string) => void, onUtterance?: (text: string) => void) => ListenerHandle | null;
 
 let audioCtx: AudioContext | null = null;
 
@@ -78,12 +77,14 @@ export function stopSpeaking() {
 }
 
 // ---------------------------------------------------------------- listening
-const FINE = /\b(i'?m (fine|ok|okay|good|alright)|fine|okay|ok|all good|yes|yeah|good)\b/i;
-const HELP = /\b(help|no|not okay|not ok|scared|emergency)\b/i;
-
-export function parseIntent(t: string): Intent | null {
-  if (HELP.test(t) && !/\bno problem\b/i.test(t)) return 'help';
-  if (FINE.test(t)) return 'fine';
+// Resolve incidents only from an explicit all-clear.
+export function parseIntent(text: string): Intent | null {
+  const t = text.toLowerCase().trim().replace(/[.!?,]/g, '').replace(/\u2019/g, "'");
+  if (/\b(not (fine|okay|ok|safe)|need help|emergency|i am scared|i'm scared)\b/.test(t) || /^(please )?help( me)?( please)?$/.test(t)) return 'help';
+  if (/\b(place to wait|somewhere to wait|somewhere staffed|find a place|wait inside)\b/.test(t)) return 'wait';
+  if (/^(replan|update (my |the )?route|reroute me)$/.test(t)) return 'replan';
+  if (/^(end (my |the )?walk|finish (my |the )?walk|i have arrived|i'm home)$/.test(t)) return 'end';
+  if (/^(i'?m (fine|ok|okay|good|alright)|i am (fine|okay|ok)|all good|fine|okay|ok)$/.test(t)) return 'fine';
   return null;
 }
 
@@ -96,10 +97,10 @@ type SR = {
   onresult: ((e: { resultIndex: number; results: ArrayLike<ArrayLike<{ transcript: string }> & { isFinal: boolean }> }) => void) | null;
   onspeechstart: (() => void) | null;
   onend: (() => void) | null;
-  onerror: (() => void) | null;
+  onerror: ((e: { error?: string }) => void) | null;
 };
 
-const browserListener: ListenerFactory = (onIntent, onSpeech) => {
+const browserListener: ListenerFactory = (onIntent, onSpeech, onError, onUtterance) => {
   const Ctor = (window as unknown as { SpeechRecognition?: new () => SR; webkitSpeechRecognition?: new () => SR }).SpeechRecognition ??
     (window as unknown as { webkitSpeechRecognition?: new () => SR }).webkitSpeechRecognition;
   if (!Ctor) return null;
@@ -116,6 +117,7 @@ const browserListener: ListenerFactory = (onIntent, onSpeech) => {
       onSpeech();
       const intent = parseIntent(t);
       if (intent && r.isFinal) onIntent(intent, t);
+      else if (r.isFinal && t.trim()) onUtterance?.(t);
     }
   };
   rec.onend = () => {
@@ -127,7 +129,7 @@ const browserListener: ListenerFactory = (onIntent, onSpeech) => {
       }
     }
   };
-  rec.onerror = () => undefined;
+  rec.onerror = e => { if (['not-allowed','service-not-allowed','audio-capture'].includes(e.error ?? '')) { active = false; onError?.('Microphone unavailable. Use the text field or buttons.'); } };
   try {
     rec.start();
   } catch {
@@ -151,8 +153,8 @@ export function setListenerFactory(f: ListenerFactory) {
 }
 
 /** Start listening for "I'm fine" / "help". Speaking over the app stops playback (barge-in). */
-export function listen(onIntent: (i: Intent, transcript: string) => void): ListenerHandle | null {
-  return listenerFactory(onIntent, () => stopSpeaking());
+export function listen(onIntent: (i: Intent, transcript: string) => void, onError?: (message: string) => void, onUtterance?: (text: string) => void): ListenerHandle | null {
+  return listenerFactory(onIntent, () => stopSpeaking(), onError, onUtterance);
 }
 
 export const canListen = () =>

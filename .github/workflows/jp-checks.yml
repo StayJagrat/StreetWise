@@ -6,7 +6,7 @@ on:
 permissions:
   contents: read
 jobs:
-  verify:
+  frontend:
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -21,3 +21,15 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+      - run: npm audit --audit-level=high
+  gateway:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: services/requirements.txt
+      - run: python -m pip install -r services/requirements.txt
+      - run: python -m unittest services/api/test_pwa.py services/api/test_live_walk.py

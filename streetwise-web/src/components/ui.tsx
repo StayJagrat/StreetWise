@@ -6,7 +6,7 @@ import { vibrate } from '../lib/device';
 import './ui.css';
 
 export function Icon({ name, size = 20, style, className }: { name: IconName; size?: number; style?: CSSProperties; className?: string }) {
-  return <span className={`icon ${className ?? ''}`} style={{ width: size, height: size, ...style }} dangerouslySetInnerHTML={{ __html: ICONS[name] }} />;
+  return <span aria-hidden="true" className={`icon ${className ?? ''}`} style={{ width: size, height: size, ...style }} dangerouslySetInnerHTML={{ __html: ICONS[name] }} />;
 }
 
 export function Mascot({ agent, state = 'idle', size = 44, alt }: { agent: AgentName; state?: MascotState; size?: number; alt?: string }) {
@@ -73,7 +73,7 @@ export function HoldButton({ kind = 'help', children, onConfirm, holdMs = 1500, 
       onPointerLeave={end}
       onPointerCancel={end}
       onContextMenu={(e) => e.preventDefault()}
-      onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && !e.repeat && begin()}
+      onKeyDown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && !e.repeat) { e.preventDefault(); begin(); } }}
       onKeyUp={end}
       aria-label="Press and hold for help"
     >
@@ -141,7 +141,7 @@ export function AgentRow({ agent, state = 'talking', to, ts, text, reason }: { a
   );
 }
 
-export function LinkBadge({ status }: { status: 'connecting' | 'online' | 'local' }) {
+export function LinkBadge({ status }: { status: 'connecting' | 'online' | 'local' | 'blocked' }) {
   const label = status === 'online' ? 'Live room' : status === 'connecting' ? 'Connecting…' : 'This device only';
   return (
     <span className={`link-badge link-badge--${status}`} title={status === 'local' ? 'No gateway/relay reachable — syncing between tabs on this device only' : 'Connected to the walk room'}>
