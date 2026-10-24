@@ -1,4 +1,4 @@
-"""Build the offline PWA demo contract from the deterministic Python engine."""
+"""Build the PWA route contract (DemoData in streetwise-web/src/lib/types.ts) from the deterministic Python engine."""
 from __future__ import annotations
 
 from bisect import bisect_left, bisect_right
@@ -127,15 +127,17 @@ def _close_time(spec: str | None, arrival: int, day: int = DAY) -> str:
     return "24h"
 
 
-def _place(engine: Engine, shop: dict, day: int = DAY, depart: int = DEPART) -> dict:
+def _place(engine: Engine, shop: dict, day: int = DAY, depart: int = DEPART, simulated: bool = True) -> dict:
     arrival = depart + round(shop.get("d", 0) / WALK_SPEED / 60)
+    known = engine.W.places[engine.W.place_index[shop["id"]]] if shop["id"] in engine.W.place_index else {}
     return {
         "id": shop["id"], "name": shop["name"] or shop["cat"].replace("_", " ").title(),
         "kind": _kind(shop["cat"]), "lngLat": shop["ll"],
         "openUntil": _close_time(shop["hours"], arrival, day),
         "safeHaven": False, "frontLight": False,
-        "simulated": True,  # the shopkeeper declaration is simulated for the demo
+        "simulated": simulated,  # True only in the offline demo export, where a teammate plays the shopkeeper
         "address": None,
+        "hoursSource": known.get("hours_source"),
     }
 
 
@@ -161,6 +163,18 @@ def _option(engine: Engine, route: dict, depart: int) -> dict:
 def build_route_data(engine: Engine, lat: float, lon: float, name: str, origin: tuple[float, float] | None = None, origin_name: str | None = None,
                      day: int = DAY, depart: int = DEPART) -> dict:
     """Build the PWA contract for any two points the street graph covers (the whole city), at any departure time."""
+    return build_plan(engine, lat, lon, name, origin, origin_name, day, depart)[0]
+
+
+def initials(name: str) -> str:
+    parts = [p for p in name.split() if p]
+    return ("".join(p[0] for p in parts[:2]) or "G").upper()
+
+
+def build_plan(engine: Engine, lat: float, lon: float, name: str, origin: tuple[float, float] | None = None, origin_name: str | None = None,
+               day: int = DAY, depart: int = DEPART, walker: str = "Arya", guardian: str = "Maya Chen", session: str = SESSION,
+               simulated_shops: bool = True) -> tuple[dict, dict]:
+    """(DemoData for the PWA, the engine's own route dicts keyed 'best' and 'fast' for the agents)."""
     name = name.strip()[:100]
     if not name:
         raise ValueError("Choose a destination.")
@@ -179,12 +193,12 @@ def build_route_data(engine: Engine, lat: float, lon: float, name: str, origin: 
             raise ValueError("The destination is outside the mapped part of San Francisco. Pick a point inside the city.")
         if origin_node == destination_node:
             raise ValueError("Start and destination are the same place. Pick a different destination.")
-        engine.clear(SESSION)
+        engine.clear(session)
         try:
-            result = engine.route(SESSION, origin, destination, day, depart)
+            result = engine.route(session, origin, destination, day, depart)
             fastest = next(r for r in result["routes"] if r["id"] == "fast")
             best = next((r for r in result["routes"] if r["id"] == "best"), fastest)
-            suggested = engine.suggest_declarations(SESSION, best, day, depart)
+            suggested = engine.suggest_declarations(session, best, day, depart)
             shop = suggested[0] if suggested else None
             named = [p for p in best["shops"] if p["name"] and p["cat"] in {"cafe", "restaurant", "bar", "pub", "pharmacy", "convenience"}]
             selected = []
@@ -192,27 +206,27 @@ def build_route_data(engine: Engine, lat: float, lon: float, name: str, origin: 
                 available = [p for p in named if p["id"] not in {s["id"] for s in selected}]
                 if available:
                     selected.append(min(available, key=lambda p: abs(p["d"] - fraction * best["km"] * 1000)))
-            places = [_place(engine, p, day, depart) for p in selected]
+            places = [_place(engine, p, day, depart, simulated_shops) for p in selected]
             what_if = None
             if shop:
                 closed = {"id": shop["id"], "name": shop["name"], "cat": shop["cat"], "ll": shop["ll"], "hours": shop["hours"], "d": shop["at"]}
-                places.append({**_place(engine, closed, day, depart), "openUntil": "closed"})
-                engine.declare(SESSION, shop["id"], depart + 150, day, depart)
-                ctx = engine.ctx(SESSION, day, depart)
+                places.append({**_place(engine, closed, day, depart, simulated_shops), "openUntil": "closed"})
+                engine.declare(session, shop["id"], depart + 150, day, depart)
+                ctx = engine.ctx(session, day, depart)
                 what_if = {
                     "placeId": shop["id"],
                     "passMinute": depart + round(shop["at"] / WALK_SPEED / 60),
                     "statsOpen": {"streetwise": _fixed_route_stats(engine, best, ctx), "shortest": _fixed_route_stats(engine, fastest, ctx)},
                 }
-                engine.clear(SESSION)
+                engine.clear(session)
             best_gap = best["gap"]["range"] or [0, best["km"] * 500]
             cumulative = _cumulative(engine, best["coords"])
             stop = _point_at(best["coords"], cumulative, sum(best_gap) / 2)
             debt = engine.darkness_debt(day, depart, near=engine.center_of(best["coords"]), top=3)
-            return {
+            data = {
                 "scenario": {"label": f"{DAY_NAMES[day]} · {_clock(depart)}", "area": f"{origin_name} → {name}", "segmentsScored": engine.W.stats()["segments"], "departureMinute": depart, "day": day},
-                "walker": {"id": "demo-walker", "name": "Arya"},
-                "guardian": {"name": "Maya Chen", "initials": "MC", "channel": "live link"},
+                "walker": {"id": "walker", "name": walker},
+                "guardian": {"name": guardian, "initials": initials(guardian), "channel": "live link"},
                 "start": {"name": origin_name, "lngLat": best["coords"][0]},
                 "end": {"name": name, "lngLat": best["coords"][-1]},
                 "route": best["coords"],
@@ -228,5 +242,6 @@ def build_route_data(engine: Engine, lat: float, lon: float, name: str, origin: 
                 "whatIf": what_if,
                 "dataNote": f"Scores compare this walk with typical walks in the same neighbourhood at the same hour. Places without listed hours count as closed. The destination is snapped to the nearest mapped street, {destination_snap_m} m away. Darkness debt is modeled walker-minutes, not observed foot traffic.",
             }
+            return data, {"best": best, "fast": fastest}
         finally:
-            engine.clear(SESSION)
+            engine.clear(session)

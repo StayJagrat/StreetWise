@@ -43,7 +43,9 @@ export default function Setup() {
           <div style={{ flex: 1 }}>
             <div className="t-caption" style={{ fontSize: 12 }}>Guardian</div>
             <input className="setup__input" value={s.guardianName} onChange={(e) => set({ guardianName: e.target.value })} aria-label="Guardian name" />
-            <div className="t-caption" style={{ fontSize: 12 }}>Gets a live link only during a walk</div>
+            <input className="setup__input setup__input--phone" type="tel" inputMode="tel" autoComplete="tel" placeholder="Phone for SMS backup (optional)"
+              value={s.guardianPhone ?? ''} onChange={(e) => set({ guardianPhone: e.target.value })} aria-label="Guardian phone" />
+            <div className="t-caption" style={{ fontSize: 12 }}>Gets a live link only during a walk · a text only if you go quiet</div>
           </div>
         </section>
 
@@ -66,7 +68,7 @@ export default function Setup() {
         </section>
 
         <label className="setup__demo t-caption">
-          Demo replay speed
+          GPS replay speed (indoor demos only)
           <select value={s.timeScale} onChange={(e) => set({ timeScale: Number(e.target.value) })}>
             {[1, 3, 6, 10].map((v) => <option key={v} value={v}>×{v}</option>)}
           </select>

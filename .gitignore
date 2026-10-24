@@ -22,3 +22,7 @@ data/cache/hours_matches_*.json
 
 # citywide source extract (re-download with the command in scripts/build_city_cache.py)
 data/raw/
+
+# runtime database (walks, GPS traces, alerts)
+data/*.db
+data/*.db-*

@@ -17,8 +17,9 @@ Written Saturday Oct 24, 2026. Deadline: **Sunday Oct 25, 9:00 AM PT** (be at th
 | --- | --- | --- |
 | Frontend (Figma-faithful) | `streetwise-web/` | Powell BART route plus searched destinations inside the pilot box. Offline replay and gateway mode are wired to `/ws`; local Protomaps tiles are used when present |
 | Scoring engine, routing, steps, why-this-street, darkness debt, Watcher rules | `services/engine/` | Working, deterministic, tested on the downtown pilot box |
-| API (REST + WebSocket hub) | `services/api/main.py`, `live_walk.py` | `/ws` forwards typed envelopes and drives Scout, Watcher, Rescuer, shop updates, and overnight audit through the deterministic engine |
-| Fetch.ai agents (Scout, Watcher, Rescuer, Reporter, Night Auditor, place agent) | `services/agents/` | 23/23 offline tests. Not on Agentverse yet |
+| Gateway (REST + one WebSocket room per walk) | `services/api/streetwise_api/` | Relay only: role checks, walker tokens, SQLite persistence, walks survive a restart. See `docs/BACKEND.md` |
+| Live walk agents (Scout, Watcher, Rescuer, Reporter, Night Auditor) | `services/agents/streetwise_agents/` | Drive real walks: plan, narration, stop check-in, off-route re-plan, guardian alert + Twilio SMS, arrival, 311 drafts with real case ids. In-process by default; `live_bureau.py` runs the same code as registered uAgents |
+| ASI:One chat agents | `services/agents/scout.py` etc. | 20/23 offline checks: the 3 that fail need a scenario where Streetwise and Fastest differ (they fail on `main` too since the citywide recalibration) |
 | Hours pipeline (Apify + parser) | `services/hours/` | Real eight-category cache: 824 fetched records, 380 matched to OSM, 153 missing OSM schedules filled by the deterministic rules parser. Apify recorded $7.07 total against the $10 cap. Claude batch parsing was stopped because 374 source rows would make uncapped paid calls |
 | Creao Hours Detective | `services/creao/` | Client and prompt done, key valid. No real run yet |
 | Old frontend | `legacy/web/` | Superseded. Has a self-hosted offline basemap (PMTiles) worth porting |
@@ -51,7 +52,7 @@ Point `streetwise-web/vite.config.ts` `/ws` proxy at `127.0.0.1:8000` instead of
 ### Piece 3: Real route plan (2 h)
 Branch `engine-demo-data`. Add `GET /api/demo` that returns Abhishek's `DemoData` shape (`streetwise-web/src/lib/types.ts`) built from the engine: `route`, `shortest`, `dimStretches` (with `lampEvidence`, `openPlaces`, `why`), `places`, `stats` (score, longest empty stretch, minutes for both routes), `darknessDebt`. Write the result to `streetwise-web/public/data/demo-route.json` so the demo works offline, and keep the endpoint for live mode. Numbers on stage must come from the engine, not the placeholder 60 vs 49.
 
-### Piece 4: Live mode, agents drive the walk (3 h)
+### Piece 4: Live mode, agents drive the walk (3 h) — DONE on `live-backend`, see docs/BACKEND.md
 Branch `live-mode`. With `VITE_ENGINE=off`, the backend answers client messages with agent messages:
 - `walk.accept` → `walk.plan` (+ `voice.say` from Scout, `agent.log` with `reason`)
 - `walk.position` → Watcher rules (`watcher_decide` in the engine) → `checkin.ask`, then `escalate` and `guardian.alert` on silence
@@ -60,7 +61,7 @@ Branch `live-mode`. With `VITE_ENGINE=off`, the backend answers client messages 
 - `audit.run` → `audit.result` (ranking and the draft 311 text; nothing is ever submitted)
 Reuse thresholds from `walk.plan.plan.thresholds` (default 90 s stop, 45 s reply, 90 s escalate).
 
-### Piece 5: Fetch.ai on Agentverse (2 h)
+### Piece 5: Fetch.ai on Agentverse (2 h) — code done (`live_bureau.py`, tested locally); still needs the seeds and the Agentverse mailbox connect
 Branch `agentverse`. Follow `services/agents/README.md`: fill the 8 seeds in `services/agents/.env`, run `run_all.py`, connect the Scout mailbox in Agentverse, confirm Scout answers in ASI:One chat. Make the gateway agents and the uAgents the same logic, called from both (do not fork it). README needs each agent's name, address and the Innovation Lab badges. Get the submission agent address from the Fetch resources doc.
 
 ### Piece 6: Real hours (2 h, run in the background)
@@ -94,20 +95,19 @@ Each new signal needs a line in the formula docs and a "data missing" state.
 - README with run steps, Devpost text, 3 to 5 min video, 3 min pitch, public repo with no keys, Creao agent ID and run link.
 
 ## Demo-day numbers to protect
-With the current real-hours evidence export, Friday 11:04 PM Powell BART → Transamerica Pyramid scores 63 vs 57, takes 21.1 vs 18.0 min, and has a longest empty stretch of 230 m vs 510 m. These route-specific numbers can change when the hours evidence changes. The random-walk summary has not been recalculated against this evidence export. The score uses no crime data and no model. Always say "conditions, not a safety rating".
+The old "63 vs 57" came from pilot-box data. On the citywide engine (Friday 11:04 PM, current hours evidence) the stage corridor Powell BART → Transamerica Pyramid scores 86 vs 85, which no longer makes the point. A scan of landmark pairs found stronger corridors (Fastest → Streetwise, longest empty stretch, extra time):
+
+| Corridor | Score | Longest empty stretch | Extra |
+| --- | --- | --- | --- |
+| Moscone Center → City Hall | 57 → 77 | 560 m → 390 m | +1.1 min |
+| Moscone Center → Ferry Building | 30 → 66 | 1710 m → 700 m | +4.8 min |
+| Powell St BART → Salesforce Transit Center | 60 → 82 | 290 m → 320 m | +0.0 min |
+
+To switch the stage corridor, change `ORIGIN` and `DESTINATION` in `services/agents/streetwise_agents/plan_data.py`, then run `scripts/export_demo.py`. Re-check the numbers after any hours-evidence change. The score uses no crime data and no model. Always say "conditions, not a safety rating".
 
 ## Run it locally
 
-```bash
-# backend (Python 3.14 is fine for the engine)
-cd services/api && ../../.venv/bin/uvicorn main:app --port 8000 --reload --reload-dir . --reload-dir ../engine
-# frontend
-cd streetwise-web && npm install && npm run dev        # http://127.0.0.1:5173
-# agents (Python 3.12 venv): see services/agents/README.md
-# hours pipeline (Python venv .venv-hours): see services/hours/README.md
-```
-
-If `.venv`, `.venv-agents` or `.venv-hours` are missing, recreate them from `services/requirements.txt` and the matching requirements files.
+See [BACKEND.md](BACKEND.md#run). Short version: `cd services/api && ../../.venv/bin/uvicorn main:app --port 8000 --reload`, then `cd streetwise-web && npm run dev`. Run `./scripts/fetch_tiles.sh` once for the basemap.
 
 ## Rules we keep
 - Nothing in the score comes from a model. Models explain, plan and parse; they never change a number.
@@ -121,3 +121,4 @@ If `.venv`, `.venv-agents` or `.venv-hours` are missing, recreate them from `ser
 - 2026-10-24: Piece 3 prepared on `engine-demo-data`: Powell BART → Transamerica Pyramid route and shortest path now come from the deterministic Python engine and cached OSM/SF 311/BART data. `/api/demo` and offline JSON match exactly: score 55 vs 49, empty stretch 450 vs 650 m, 21.2 vs 18.0 min; simulated Walgreens hours update has an engine-calculated fixed-route what-if of 69 vs 60. Verified export, build, API, `/walk`, `/shop`, and `/room` with the route evidence card in the browser. Map tiles still need a connection or prior cache. Commit awaits the user.
 - 2026-10-24: Integration pass on `engine-demo-data`: `/ws` now activates the deterministic live-walk adapter, supports selected destinations snapped within 150 m, and refuses to start a fallback route when planning fails. Verified the browser control room, replay movement, dim-stretch Watcher check-in, guardian escalation link, route search, local Protomaps map, and a custom-destination walker route. After importing real hours evidence, the offline export and API match at 63 vs 57, 230 m vs 510 m empty stretches, and 21.1 vs 18.0 minutes; the engine reports 153 added schedules and 339 places whose hours remain missing. The eight-category Apify cache cost $7.07 total, under the $10 cap; the source rules parser processed 380 OSM matches. A 40-place parser evaluation measured 95.1% weekly half-hour-slot agreement (62.5% of the sample reached at least 95%). Build and 7 unit tests pass. Agentverse still needs the eight account seeds; live Mapillary, 511, and Ticketmaster features need provider keys. No Agentverse deployment or field walk was performed. No commit or push.
 - 2026-10-24 PM: Codex built the gateway, live walk, vision and demo export on `engine-demo-data`. Claude added citywide data, regional score calibration, `/api/route-demo` for any two points, `/api/search` and the `/plan` screen. Committed and pushed on `engine-demo-data`; open a PR into `main`.
+- 2026-10-24 evening (Claude, branch `live-backend`): restructured the backend. The gateway (`services/api/streetwise_api/`) is relay-only, with role-checked messages, walker tokens and SQLite persistence. The five agents (`services/agents/streetwise_agents/`) drive real walks, in-process or as uAgents (`live_bureau.py`, every agent-to-agent hand-off is a uAgents message). The PWA creates walks with `POST /api/walks` and every screen draws Scout's `walk.plan` (fixes the guardian QR showing the wrong route on another phone). Flags: `?agents=live|demo`, `?gps=real|replay`. Added Twilio SMS backup, Cartesia Sonic proxy, cross-street "where" for alerts, 311 drafts citing real open case ids, off-route re-plan, arrival detection, map error boundary (no WebGL no longer blanks the app), Logo and favicon from Abhishek's copy, deploy files for Vultr + Caddy. Tests: 4 end-to-end in `services/api/tests` (including restart and uAgents). Re-exported `demo-route.json`: the committed one was from pilot-box data; on the citywide engine Powell → Transamerica is now 86 vs 85.

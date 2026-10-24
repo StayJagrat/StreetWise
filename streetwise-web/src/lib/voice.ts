@@ -56,6 +56,42 @@ const browserSpeaker: Speaker = {
   },
 };
 
+// Cartesia Sonic through the gateway (the key stays on the server). Any failure falls back to on-device speech for that line.
+let current: HTMLAudioElement | null = null;
+const cartesiaSpeaker: Speaker = {
+  async speak(text) {
+    try {
+      const r = await fetch('/api/voice/tts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
+      if (!r.ok) throw new Error(String(r.status));
+      const url = URL.createObjectURL(await r.blob());
+      current?.pause();
+      current = new Audio(url);
+      await new Promise<void>((resolve) => {
+        current!.onended = () => resolve();
+        current!.onerror = () => resolve();
+        current!.play().catch(() => resolve());
+      });
+      URL.revokeObjectURL(url);
+    } catch {
+      await browserSpeaker.speak(text);
+    }
+  },
+  stop() {
+    current?.pause();
+    browserSpeaker.stop();
+  },
+};
+
+/** Pick the voice once at start-up: Cartesia when the gateway has it, otherwise the browser's own speech. */
+export async function initVoice() {
+  try {
+    const h = (await fetch('/api/health').then((r) => r.json())) as { tts?: string };
+    if (h.tts === 'cartesia') setSpeaker(cartesiaSpeaker);
+  } catch {
+    /* offline: browser speech */
+  }
+}
+
 let speaker: Speaker = browserSpeaker;
 let muted = false;
 

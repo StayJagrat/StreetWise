@@ -104,14 +104,16 @@ class World:
 
     # ---------- SF 311 ----------
     def _load_311(self):
-        rows = json.loads((CACHE / "sf311_history.json").read_text()); P = self.proj; seen, lamps, out = set(), [], []
+        rows = json.loads((CACHE / "sf311_history.json").read_text()); P = self.proj; seen, lamps, out = set(), [], []; self.outage_cases = []
         from datetime import datetime, timedelta
         recent = (datetime(2026, 10, 24) - timedelta(days=180)).strftime("%Y-%m-%d")
         for r in rows:
             if not r.get("lat") or float(r["lat"]) == 0: continue          # ~27% of cases arrive without coordinates
             p = P.xy(float(r["lat"]), float(r["long"])); k = (int(p[0] // 12), int(p[1] // 12))
             if k not in seen: seen.add(k); lamps.append(p)                  # a report proves a pole stood here
-            if r.get("status_description") == "Open" and r["requested_datetime"][:10] >= recent: out.append(p)
+            if r.get("status_description") == "Open" and r["requested_datetime"][:10] >= recent:
+                out.append(p); self.outage_cases.append(dict(id=r["service_request_id"], opened=r["requested_datetime"][:10], details=r.get("service_details") or "Streetlight", p=p,
+                                                              ll=[round(float(r["long"]), 6), round(float(r["lat"]), 6)]))
         self.lamp_evidence = len(lamps)
         allp = list(self.lamps_osm) + lamps; self.lamps = np.array(allp) if allp else np.zeros((0, 2))
         self.outages = np.array(out) if out else np.zeros((0, 2)); self.n311 = len(rows)

@@ -21,15 +21,29 @@ LANDMARKS = [  # approximate coordinates, used for search and snapping only
 ]
 
 
+_SUFFIX = {"Street": "St", "Avenue": "Ave", "Boulevard": "Blvd", "Place": "Pl", "Terrace": "Ter", "Drive": "Dr", "Lane": "Ln", "Alley": "Aly"}
+
+
+def short_street(name: str) -> str:
+    """'Howard Street' -> 'Howard St' (only the last word, so 'Avenue of the Palms' stays as it is)."""
+    head, _, last = name.rpartition(" ")
+    return f"{head} {_SUFFIX[last]}" if head and last in _SUFFIX else name
+
+
 class Engine:
     def __init__(self, bbox=BBOX):
         t0 = time.time(); self.W = World(bbox); self.lock = threading.RLock(); self.sessions: dict[str, Ctx] = {}
+        self.declared: dict[int, dict[str, int]] = {}   # city-wide shopkeeper declarations: night weekday -> place id -> open-until minute
         self._norms = {}; self._quick = {}
         self.boot_seconds = round(time.time() - t0, 1)
 
     # ---------- context ----------
     def ctx(self, session: str, day: int, minute: int) -> Ctx:
-        base = self.sessions.setdefault(session, Ctx(day, minute)); return Ctx(day, minute, dict(base.overrides))
+        base = self.sessions.setdefault(session, Ctx(day, minute)); return Ctx(day, minute, {**self.declared.get(day, {}), **base.overrides})
+
+    def set_declarations(self, declared: dict[int, dict[str, int]]):
+        """Replace the city-wide shopkeeper declarations (loaded from the database). Every later ctx() sees them."""
+        with self.lock: self.declared = {int(d): dict(v) for d, v in declared.items()}
 
     def norm(self, ctx: Ctx, near=None) -> Norm:
         """Reference distribution for the neighbourhood of `near` (projected x, y in metres, or a (lon, lat) list via center_of)."""
@@ -257,6 +271,49 @@ class Engine:
                 t = (tgt - cum) / max(L, 1e-6); return [coords[i - 1][0] + (coords[i][0] - coords[i - 1][0]) * t, coords[i - 1][1] + (coords[i][1] - coords[i - 1][1]) * t]
             cum += L
         return coords[-1]
+
+    # ---------- reverse geocoding from the street graph (offline) ----------
+    def where(self, lat, lon):
+        """Readable location for an alert: nearest named street and the cross streets either side, e.g. 'Howard St between 4th St and 5th St'."""
+        with self.lock:
+            W = self.W; p = W.proj.xy(lat, lon); d = np.hypot(W.e_mid[:, 0] - p[0], W.e_mid[:, 1] - p[1]); order = np.argsort(d)[:25]
+            k = next((int(i) for i in order if W.edges[int(i)][2]["name"] and d[int(i)] <= 60), int(order[0]))
+            a, b, ed = W.edges[k]; name = ed["name"]
+            if not name: return dict(street=None, between=[], text="a walking path off the street grid", offset_m=round(float(d[k])))
+            between = [c for c in (self._cross(a, b, name), self._cross(b, a, name)) if c]
+            between = [short_street(c) for c in dict.fromkeys(between)]; name = short_street(name)
+            text = f"{name} between {between[0]} and {between[1]}" if len(between) == 2 else f"{name} near {between[0]}" if between else name
+            return dict(street=name, between=between, text=text, offset_m=round(float(d[k])))
+
+    def _cross(self, node, prev, name, limit=60):
+        G = self.W.G
+        for _ in range(limit):
+            other = [G.edges[node, n]["name"] for n in G.neighbors(node) if n != prev and G.edges[node, n]["name"] and G.edges[node, n]["name"] != name]
+            if other: return other[0]
+            nxt = [n for n in G.neighbors(node) if n != prev and G.edges[node, n]["name"] == name]
+            if not nxt: return None
+            prev, node = node, nxt[0]
+        return None
+
+    # ---------- open SF 311 streetlight cases (real case ids) ----------
+    def cases_near(self, coords, radius=40.0, limit=10):
+        """Open SF 311 streetlight cases within `radius` m of a [[lon, lat], ...] line, nearest first. Ids are the city's own case numbers."""
+        W = self.W
+        if not W.outage_cases or not coords: return []
+        P = np.array([W.proj.xy(c[1], c[0]) for c in coords]); out = []
+        for c in W.outage_cases:
+            dist = float(np.min(np.hypot(P[:, 0] - c["p"][0], P[:, 1] - c["p"][1])))
+            if dist <= radius: out.append(dict(id=c["id"], opened=c["opened"], details=c["details"], ll=c["ll"], meters=round(dist)))
+        return sorted(out, key=lambda c: c["meters"])[:limit]
+
+    def cases_on_street(self, name, radius=30.0, limit=5):
+        W = self.W; mids = np.array([W.e_mid[i] for i, (_, _, ed) in enumerate(W.edges) if ed["name"] == name])
+        if not len(mids) or not W.outage_cases: return []
+        out = []
+        for c in W.outage_cases:
+            dist = float(np.min(np.hypot(mids[:, 0] - c["p"][0], mids[:, 1] - c["p"][1])))
+            if dist <= radius: out.append(dict(id=c["id"], opened=c["opened"], details=c["details"], ll=c["ll"]))
+        return sorted(out, key=lambda c: c["opened"], reverse=True)[:limit]
 
     def audit(self, route=None):
         W = self.W; miss = {}

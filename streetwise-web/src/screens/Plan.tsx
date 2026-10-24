@@ -4,6 +4,7 @@ import PickerMap from '../components/PickerMap';
 import { Button, Icon, Mascot } from '../components/ui';
 import { inCity, LOCAL_DESTINATIONS, nameForPin, searchPlaces, type DestinationResult } from '../lib/search';
 import { loadSettings, primeDemoData, saveSettings } from '../lib/store';
+import { createPlan, createWalk, gpsMode, isLive, withFlags, type Plan as LivePlan } from '../lib/api';
 import type { DemoData, LngLat } from '../lib/types';
 import { minutesText } from '../lib/format';
 import './walk.css';
@@ -53,7 +54,8 @@ export default function Plan() {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<DestinationResult[]>([]);
   const [searching, setSearching] = useState(false);
-  const [plan, setPlan] = useState<DemoData | null>(null);
+  const [plan, setPlan] = useState<DemoData | LivePlan | null>(null);
+  const [starting, setStarting] = useState(false);
   const [planning, setPlanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pick, setPick] = useState<'fast' | 'best'>('best');
@@ -103,15 +105,10 @@ export default function Plan() {
     const c = new AbortController();
     setPlanning(true);
     setError(null);
-    const params = new URLSearchParams({ lat: String(to.lngLat[1]), lon: String(to.lngLat[0]), name: to.name, olat: String(from.lngLat[1]), olon: String(from.lngLat[0]), oname: from.name, day: String(when.day), minute: String(when.minute) });
     const t = window.setTimeout(() => {
-      fetch(`/api/route-demo?${params}`, { signal: c.signal })
-        .then(async (r) => {
-          if (!r.ok) throw new Error(((await r.json().catch(() => ({}))) as { detail?: string }).detail ?? `The route service answered ${r.status}.`);
-          return r.json() as Promise<DemoData>;
-        })
+      createPlan(from, to, { day: when.day, minute: when.minute }, c.signal)
         .then((d) => { setPlan(d); setPick(d.recommended === 'fast' ? 'fast' : 'best'); })
-        .catch((e: Error) => { if (!c.signal.aborted) { setPlan(null); setError(e.message === 'Failed to fetch' ? 'Cannot reach the Streetwise engine. Is the API running on port 8000?' : e.message); } })
+        .catch((e: Error) => { if (!c.signal.aborted) { setPlan(null); setError(e.message); } })
         .finally(() => { if (!c.signal.aborted) setPlanning(false); });
     }, 250);
     return () => { window.clearTimeout(t); c.abort(); };
@@ -136,12 +133,27 @@ export default function Plan() {
   const extra = stats ? stats.streetwise.minutes - stats.shortest.minutes : 0;
   const same = !!plan && plan.options?.length === 1;
 
-  const review = () => {
+  const review = async () => {
     if (!from || !to || !plan) return;
     const next = { ...saved, origin: from, destination: to, depart: when };
     saveSettings(next);
-    primeDemoData(next, plan);
-    nav('/walk');
+    if (!isLive()) {
+      primeDemoData(next, plan);
+      nav(withFlags('/walk'));
+      return;
+    }
+    setStarting(true);
+    try {
+      const replay = gpsMode() === 'replay';
+      const w = await createWalk({
+        planId: 'planId' in plan ? plan.planId : undefined, from, to, when: { day: when.day, minute: when.minute }, choice: pick === 'fast' ? 'usual' : 'streetwise',
+        walker: saved.walkerName, guardian: saved.guardianName, guardianPhone: saved.guardianPhone, thresholds: saved.thresholds, replay, timeScale: replay ? saved.timeScale : 1,
+      });
+      nav(withFlags(w.walkPath));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not start the walk.');
+      setStarting(false);
+    }
   };
 
   const row = (field: Field, spot: Spot | null, placeholder: string) => (
@@ -227,7 +239,7 @@ export default function Plan() {
                 : `Streetwise scores ${gain >= 0 ? '+' : ''}${gain} points higher for ${extra >= 0 ? '+' : ''}${extra.toFixed(1)} min. The longest stretch with nothing open drops from ${stats.shortest.longestEmptyM} m to ${stats.streetwise.longestEmptyM} m.`}
             </p>
             <div className="t-caption" style={{ fontSize: 11 }}>Compared with typical walks nearby at this hour. Conditions, not a safety rating.</div>
-            <Button kind="primary" block onClick={review}>Review with Scout</Button>
+            <Button kind="primary" block disabled={starting} onClick={() => void review()}>{starting ? 'Starting your walk…' : 'Review with Scout'}</Button>
           </>
         )}
         {!plan && !planning && !error && from && to && <div className="t-caption">Scoring starts as soon as both pins are set.</div>}

@@ -16,7 +16,8 @@ export interface Place {
   safeHaven: boolean;
   frontLight?: boolean;
   simulated: boolean;
-  address?: string;
+  address?: string | null;
+  hoursSource?: string | null; // osm | apify | shopkeeper ...
 }
 
 export interface DimStretch {
@@ -89,11 +90,11 @@ export interface Thresholds {
 
 // ---------------------------------------------------------------- messages
 export type Msg =
-  | { type: 'walk.plan'; plan: { routeId: string; stats: DemoData['stats']; reason: string; thresholds: Thresholds; guardian: string } }
+  | { type: 'walk.plan'; plan: WalkPlan }
   | { type: 'walk.reset' }
   | { type: 'walk.accept'; choice: 'streetwise' | 'usual'; guardian?: string; thresholds?: Thresholds; origin?: { lat: number; lon: number }; dest?: { lat: number; lon: number }; day?: number; minute?: number }
   | { type: 'walk.start'; replay: boolean }
-  | { type: 'walk.position'; lngLat: LngLat; heading: number; speed: number; progress: number; replay: boolean }
+  | { type: 'walk.position'; lngLat: LngLat; heading: number; speed: number; progress: number; replay: boolean; accuracy?: number }
   | { type: 'voice.say'; agent: AgentName; text: string }
   | { type: 'checkin.ask'; agent: 'watcher'; text: string; reason: string; windowSec: number; deadline: number }
   | { type: 'checkin.reply'; reply: 'fine' | 'help'; via: 'voice' | 'tap' }
@@ -103,9 +104,22 @@ export type Msg =
   | { type: 'guardian.join'; name: string }
   | { type: 'place.update'; place: Pick<Place, 'id' | 'openUntil' | 'safeHaven' | 'frontLight'> }
   | { type: 'agent.log'; agent: AgentName; to?: string; text: string; reason: string; at?: number }
-  | { type: 'walk.end'; outcome: 'arrived' | 'ended' | 'incident'; summary: string }
+  | { type: 'walk.end'; outcome: 'arrived' | 'ended' | 'incident'; summary: string; draft311?: string }
   | { type: 'audit.run' }
-  | { type: 'audit.result'; ranking: { street: string; minutes: number }[]; draft311: string };
+  | { type: 'audit.result'; ranking: { street: string; minutes: number }[]; draft311: string; cases?: { id: string; opened: string; details: string }[] };
+
+/** Scout's plan. In live mode `data` carries the whole route, so every screen on every device draws the same walk. */
+export interface WalkPlan {
+  routeId: string;
+  stats: DemoData['stats'];
+  reason: string;
+  thresholds: Thresholds;
+  guardian: string;
+  walker?: string;
+  replay?: boolean;
+  timeScale?: number;
+  data?: DemoData;
+}
 
 export interface Envelope<M extends Msg = Msg> {
   id: string;

@@ -1,3 +1,4 @@
+import { adminToken, walkCreds } from './api';
 import type { Envelope, Msg } from './types';
 
 // One Room per walk. It talks to the gateway over WebSocket when it can,
@@ -43,7 +44,9 @@ export class Room {
     const env = import.meta.env.VITE_GATEWAY_URL as string | undefined;
     const base = env && env.length > 0 ? env : `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
     const sep = base.includes('?') ? '&' : '?';
-    return `${base}${sep}walk=${encodeURIComponent(this.walkId)}&role=${this.role}`;
+    // walker: the token issued when the walk was created on this phone; room: the control-room token, if the server requires one
+    const token = this.role === 'walker' ? walkCreds(this.walkId)?.token ?? '' : this.role === 'room' ? adminToken() : '';
+    return `${base}${sep}walk=${encodeURIComponent(this.walkId)}&role=${this.role}${token ? `&token=${encodeURIComponent(token)}` : ''}`;
   }
 
   private setStatus(s: LinkStatus) {
@@ -81,9 +84,14 @@ export class Room {
         /* ignore malformed */
       }
     };
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
       window.clearTimeout(giveUp);
       if (this.closed) return;
+      if (ev.code === 4401 || ev.code === 4404 || ev.code === 1008) {
+        // refused: wrong token or unknown walk. Retrying won't help.
+        this.setStatus('local');
+        return;
+      }
       this.setStatus('local');
       const wait = Math.min(15000, 1000 * 2 ** this.retry++);
       window.setTimeout(() => this.connect(), wait);

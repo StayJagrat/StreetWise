@@ -1,12 +1,14 @@
+import { Logo } from '../components/Logo';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import MapView from '../components/MapView';
-import { Button, Icon, LinkBadge, Sheet } from '../components/ui';
+import { Button, DemoTape, Icon, LinkBadge, Sheet } from '../components/ui';
 import { lineLength } from '../lib/geo';
-import { loadSettings, mergedPlaces, useDemoData, useWalk } from '../lib/store';
+import { loadSettings, mergedPlaces, useWalk, useWalkData } from '../lib/store';
 import { getAudioContext, unlockAudio } from '../lib/voice';
 import { vibrate } from '../lib/device';
 import { timeOf } from '../lib/format';
+import { isLive } from '../lib/api';
 import './guardian.css';
 
 // Opened from a QR code on the judge's own phone. No install, no login.
@@ -32,17 +34,24 @@ function beep() {
 
 export default function Guardian() {
   const { walk = 'demo' } = useParams();
-  const { data, error } = useDemoData();
   const settings = useMemo(loadSettings, []);
   const { state, send, status } = useWalk(walk, 'guardian');
+  const { data, error, waiting } = useWalkData(state);
   const [sound, setSound] = useState(false);
   const [details, setDetails] = useState(false);
   const [now, setNow] = useState(Date.now());
-  const me = settings.guardianName.split(' ')[0];
-  const walker = settings.walkerName;
+  const me = (state.plan?.guardian ?? settings.guardianName).split(' ')[0];
+  const walker = state.plan?.walker ?? settings.walkerName;
 
+  const joined = useRef(false);
   useEffect(() => {
-    send({ type: 'guardian.join', name: me });
+    if (!joined.current && (state.plan || !isLive())) {
+      joined.current = true;
+      send({ type: 'guardian.join', name: me });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.plan]);
+  useEffect(() => {
     const t = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -58,7 +67,7 @@ export default function Guardian() {
     }
   }, [state.alert]);
 
-  if (!data) return <div className="screen" data-theme="day" role={error ? 'alert' : undefined} style={{ padding: 24 }}>{error ?? 'Loading route…'}</div>;
+  if (!data) return <div className="screen" data-theme="day" role={error ? 'alert' : undefined} style={{ padding: 24 }}>{error ?? (waiting ? 'Waiting for the walk to be planned…' : 'Loading route…')}</div>;
   const places = mergedPlaces(data, state);
   const active = state.phase !== 'preview' && state.phase !== 'arrived';
   const lastCheck = state.lastReply?.reply === 'fine' ? state.lastReply.ts : state.startedAt;
@@ -82,7 +91,7 @@ export default function Guardian() {
 
       <header className="g-top">
         <div>
-          <div className="wordmark">streetwise</div>
+          <Logo size={20} />
           <div className="t-caption" style={{ fontSize: 12 }}>Shared by {walker} · ends when the walk ends</div>
         </div>
         {active ? (
@@ -91,6 +100,10 @@ export default function Guardian() {
           <LinkBadge status={status} />
         )}
       </header>
+
+      {(state.replay || state.plan?.replay) && active && (
+        <div className="g-tape"><DemoTape label={`DEMO · GPS REPLAY${state.plan?.timeScale ? ` · ×${state.plan.timeScale}` : ''}`} /></div>
+      )}
 
       {!sound && (
         <button type="button" className="g-sound" onClick={() => { unlockAudio(); setSound(true); }}>
@@ -133,7 +146,7 @@ export default function Guardian() {
 
       {alerting && state.alert && (
         <div className="g-alert" role="alertdialog" aria-labelledby="g-alert-title">
-          <div className="g-alert__label t-number"><span className="g-alert__dot" /> STREETWISE ALERT · {timeOf(state.alert.ts)}</div>
+          <div className="g-alert__label t-number"><span className="g-alert__dot" /> STREETWISE ALERT · {timeOf(state.alert.ts)}{state.plan?.replay ? ' · DEMO REPLAY' : ''}</div>
           <h1 id="g-alert-title" className="g-alert__title">{walker.toUpperCase()} ISN'T ANSWERING</h1>
           <p className="g-alert__body">{state.alert.reason}. Last seen on {state.alert.where}.</p>
           <div className="g-alert__map">

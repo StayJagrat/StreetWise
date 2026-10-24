@@ -34,54 +34,32 @@ Open `https://<tunnel>/room` on the laptop, scan the QR with a second phone (gua
 
 For the demo build: `npm run build && npm run preview` (port 4173, same `/ws` proxy).
 
-## Demo mode vs live mode
+## Live mode and demo mode
 
-**Demo mode (default)** — `src/lib/engine.ts` replays the five agent roles from cached route data. The route and score work without the API; map tiles need a connection or a prior cache:
+Two switches, set per URL or per build (`VITE_AGENTS`, `VITE_GPS`):
 
-- GPS is replayed along the route, with the "DEMO · GPS REPLAY · ×N" tape always visible.
-- One stop is injected on the engine-selected stretch. After the stop threshold the Watcher asks; if there's silence, the Rescuer alerts the guardian.
-- The simulated shop toggle re-scores the fixed routes using an engine-calculated what-if cached for offline replay.
-- Replay speed is set in `/setup` (×6 by default; thresholds are scaled by the same factor and the UI says so).
-- The control-room gateway replay uses a labeled ×30 playback and scales its Watcher thresholds for a short stage demo.
-- Reloading `/walk` starts a fresh walk (`walk.reset`).
-- If the walker phone dies, press **Start demo walk here** in the control room.
+| | `?agents=live` (default) | `?agents=demo` |
+| --- | --- | --- |
+| Who drives the walk | the gateway's five agents (`docs/BACKEND.md`) | `src/lib/engine.ts` plays them from cached data |
+| Route | Scout's `walk.plan`, same on every device | `public/data/demo-route.json` |
+| `?gps=real` (default) | the phone's GPS | — |
+| `?gps=replay` | `src/lib/replay.ts` replays positions; the live agents answer | DemoEngine replay |
 
-**Gateway mode** — `VITE_ENGINE=off` (or `?engine=off`): the frontend loads `/api/demo` from the backend, or `/api/route-demo` for a selected destination. Walk, guardian, shop, and control-room screens share `/ws`; the server runs the same deterministic Python route and Watcher logic. If route data is missing, the selected route shows an error instead of substituting another corridor.
+Every replay shows the "DEMO · GPS REPLAY" tape on the walker, guardian and control-room screens. The stage demo indoors is `?gps=replay` with live agents. In the control room, **Start demo walk here** creates a real walk on the stage corridor and replays it.
 
-## Wiring the gateway (Brain)
+Live flow: `/setup` (guardian name and optional phone, standing orders) → `/plan` (any two points in San Francisco) → **Review with Scout** creates the walk (`POST /api/walks`) → `/walk?walk=<id>`. The walker's phone keeps the walk token. Share the guardian link or show its QR in `/room?walk=<id>`. Shopkeepers use `/shop/<place id>`.
 
-`src/lib/types.ts` is the contract. Every message is an envelope:
+## Gateway contract
+
+`src/lib/types.ts` is the contract; `docs/BACKEND.md` describes the gateway, the agents and every endpoint. Each message is an envelope:
 
 ```json
-{ "id": "…", "walkId": "demo", "ts": 1761373440000, "from": "engine|walker|guardian|shop|room|gateway", "msg": { "type": "…", … } }
+{ "id": "…", "walkId": "…", "ts": 1761373440000, "from": "walker|guardian|shop|room|engine|gateway", "msg": { "type": "…", … } }
 ```
 
-The FastAPI gateway (`services/api/main.py`) now:
+Clients send `walk.accept`, `walk.start`, `walk.position`, `checkin.reply`, `walk.end` (walker), `guardian.join` and `guardian.ack` (guardian), and `audit.run` (room). Agents send `walk.plan` (with the full route in `plan.data`), `voice.say`, `checkin.ask`, `escalate`, `guardian.alert`, `agent.log` (always with a `reason`), `place.update`, `walk.end` and `audit.result`. The gateway drops agent types sent by clients.
 
-1. Accept `wss://…/ws?walk=<id>&role=<role>`.
-2. Forward every envelope to everyone else in that walk's room.
-3. Sends `{ "kind": "history", "envelopes": [...] }` to a late joiner.
-
-`relay/server.mjs` remains an optional standalone development relay. For a separately hosted API, set `VITE_GATEWAY_URL=wss://your-gateway/ws`.
-
-Message types the agents produce:
-
-- `walk.plan`
-- `voice.say`
-- `checkin.ask`
-- `escalate`
-- `guardian.alert`
-- `agent.log` (with `reason`, which shows in the control room)
-- `walk.end`
-- `audit.result`
-
-The client produces:
-
-- `walk.accept`, `walk.start`, `walk.position`
-- `checkin.reply` (voice or tap)
-- `guardian.join`, `guardian.ack`
-- `place.update`
-- `audit.run`
+For a separately hosted API, set `VITE_GATEWAY_URL=wss://your-gateway/ws`. `relay/server.mjs` is still there as a standalone relay for the offline demo.
 
 ## Voice (Voice role)
 
@@ -92,6 +70,8 @@ The client produces:
 
 The "Go this way" tap already unlocks audio, starts the mic and requests the screen wake lock. Speaking over the app stops playback.
 
+Sonic is wired: when the gateway has `CARTESIA_API_KEY`, `/api/health` reports `tts: "cartesia"` and `initVoice()` switches to the `/api/voice/tts` proxy. Any failed line falls back to on-device speech. Speech in still uses the browser's recognition; Ink is not wired yet.
+
 ## Map (City role)
 
 The map uses MapLibre GL with a self-hosted Protomaps PMTiles archive when available. Run `./scripts/fetch_tiles.sh` from the repository root to copy the cached San Francisco extract from `legacy/web/` (the archive stays ignored). The style uses the Figma `map/*` variables: Night for the walker and control room, Day for the guardian and shop. The service worker caches tiles; the route, lamps and places still draw if map tiles are unavailable.
@@ -101,7 +81,7 @@ The map uses MapLibre GL with a self-hosted Protomaps PMTiles archive when avail
 - OSM street graph geometry for the scored route and the shortest path
 - scored stretches with OSM and SF 311 streetlight evidence, plus listed hours
 - real OSM places; the shopkeeper interaction is labelled simulated
-- current route stats from the engine: 63 vs 57, 230 m vs 510 m longest stretch without a listed open place or help point, +3.1 min. Real matched hours evidence changes these numbers; re-run the export script after changing the cache.
+- current route stats from the citywide engine: 86 vs 85, 290 m vs 320 m longest stretch without a listed open place or help point. Stronger stage corridors are listed in docs/HANDOFF.md. Re-run the export script after changing the cache.
 - darkness-debt ranking from modeled trips, never observed foot traffic
 
 Place hours are missing for some locations and count as closed. A rules-based parser filled 153 OSM schedules from real Apify source results; unmatched shops remain simulated. The mapped endpoint is the nearest cached street node, about 58 m from the Pyramid.
