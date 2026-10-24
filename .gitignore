@@ -1,0 +1,9 @@
+.env
+.env.*
+!.env.example
+!.env.server.example
+node_modules/
+dist/
+supabase/.temp/
+supabase/.branches/
+*.log

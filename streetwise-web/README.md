@@ -1,5 +1,11 @@
 # Streetwise — web (PWA)
 
+## JP persistence work
+
+The `JP` branch adds optional server-only Supabase storage to the existing demo relay. See the [repository workflow](../docs/WORKFLOW.md) and [Supabase setup guide](../docs/SUPABASE.md). Run `npm test` and `npm run build` to verify the foundation. Without Supabase configuration, the demo still uses in-memory storage.
+
+The development relay now validates messages and accepts GPS replay only. For live location, point `VITE_GATEWAY_URL` at an authenticated gateway. Guardian consent, scoped access and backend safety timers are the next milestone; this relay is for fictional demo data.
+
 The front end for Streetwise, built from the Figma file *Streetwise — Cal Hacks 13.0*.
 It is one React + Vite PWA with five screens that all join the same walk room:
 

@@ -8,13 +8,18 @@
     "preview": "vite preview --host",
     "relay": "node relay/server.mjs",
     "assets": "node scripts/gen-assets.mjs",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/*.test.mjs",
+    "db:check": "node scripts/check-supabase.mjs",
+    "db:seed": "node scripts/seed-supabase.mjs",
+    "db:smoke": "node scripts/smoke-supabase.mjs"
   },
   "dependencies": {
     "@fontsource/barlow-condensed": "^5.3.0",
     "@fontsource/bricolage-grotesque": "^5.3.0",
     "@fontsource/dm-mono": "^5.3.0",
     "@fontsource/instrument-sans": "^5.3.0",
+    "@supabase/supabase-js": "^2.118.0",
     "maplibre-gl": "^4.7.1",
     "qrcode": "^1.5.4",
     "react": "^18.3.1",
@@ -22,6 +27,7 @@
     "react-router-dom": "^6.30.6"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.11",
     "@types/node": "^26.6.5",
     "@types/qrcode": "^1.5.6",
     "@types/react": "^18.3.31",
@@ -34,6 +40,7 @@
     "vite-plugin-pwa": "^0.20.5",
     "ws": "^8.22.0"
   },
+  "engines": { "node": ">=22.17.0" },
   "private": true,
   "type": "module"
 }
