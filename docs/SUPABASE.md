@@ -10,6 +10,8 @@
 
 This dedicated development project is separate from GitHub `main`. No GitHub integration or deployment trigger is connected. Keep future code work and pushes on `JP`.
 
+JP was built/tested from `519db43`. The teammate's independent merge advanced main to `cec4172` during this work. The [workflow](WORKFLOW.md#updated-main-integration-handoff) names the existing FastAPI persistence hook and synchronization checks. This change does not yet persist the newly merged Python gateway's events.
+
 ## Schema
 
 | Table | Purpose |

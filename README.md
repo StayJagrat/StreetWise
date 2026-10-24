@@ -2,6 +2,8 @@
 
 This branch starts from `main` commit `519db43` and adds the Supabase persistence foundation to the existing PWA. Development changes belong to **JP**. No automatic GitHub-to-Supabase deployment is connected.
 
+While this change was being verified, Arya merged the engine/API work into `main` at `cec4172`. That independent update was reviewed and is covered in the workflow's integration handoff. It is not merged into this Supabase branch; the current JP verification applies to the original PWA plus the new persistence foundation.
+
 - [Repository-based workflow](docs/WORKFLOW.md): current implementation, priorities, ownership, and completion gates.
 - [Supabase setup and verification](docs/SUPABASE.md): schema, environment, local tests, and cloud setup.
 - [Existing PWA guide](streetwise-web/README.md): screens, message contract, voice hooks, and map assets.

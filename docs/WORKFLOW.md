@@ -4,9 +4,29 @@
 
 Source reviewed: GitHub `main`, commit `519db43` (`Add Streetwise web PWA`). The actual GitHub Desktop checkout is already on `JP`; that is the only branch this work changes or publishes. Existing frontend source/design is retained.
 
-Another remote branch, `engine-demo-data`, contains a Python engine, FastAPI gateway, agents, hours pipeline, and cached datasets. It was inspected as context, not merged. Its README describes a different deterministic scoring model. Integrating that work requires agreeing on contracts and score definitions; do not silently combine its numbers with this branch's fixture statistics.
+During final verification, Arya independently merged `engine-demo-data` into `main` at `cec4172` (PR #1). The updated `README.md`, `docs/HANDOFF.md`, gateway, live-walk adapter and TypeScript contract were reviewed. This JP branch retains its original base; no main merge, rebase or push to main was performed here. The original-baseline table below describes `519db43`, not the newly advanced main.
 
-## What is actually implemented
+## Updated main: integration handoff
+
+The [current team handoff](https://github.com/StayJagrat/StreetWise/blob/cec417264ba749d53c5ea0e9266df6d4b84acc3b/docs/HANDOFF.md) supersedes the supplied early build plan in these areas:
+
+| Updated main contains | Reuse it in the next JP integration |
+| --- | --- |
+| `services/engine/`: citywide deterministic routing and regional score calibration | Use computed route geometry, evidence and metrics; retire the original 60/49 fixture claim |
+| `services/api/main.py`: `/ws`, `/api/demo`, `/api/route-demo`, offline search | Attach persistence to the existing `WalkRoom.publish` boundary rather than creating another gateway |
+| `services/api/live_walk.py`: server-side stop/reply/escalation tasks | Add durable deadlines, restart restoration and authorization to this adapter |
+| `/plan` screen and expanded `DemoData`/`walk.accept` contracts | Preserve selected start, destination, departure time and route options when synchronizing JP |
+| Real hours pipeline and city cache | Keep source provenance; do not seed old demo fixtures over imported place evidence |
+| Engine-based shop re-scoring and plan updates | Verify whether remaining geometry/turn instructions also update; do not infer that from a changed score alone |
+| Agent modules and offline tests | Deploy/register and verify actual Agentverse/ASI:One exchanges; modules alone are not deployment proof |
+
+The updated score has **no crime input and no model-generated component**. Use the team's current “conditions, not a safety rating” wording. Numbers in the handoff are route-specific and change with evidence; recompute the chosen route before pitching it. The handoff also flags that arbitrary-route gateway/GPS behavior and its live-walk tests need another pass after the citywide changes. These statements were reviewed from the new code/handoff, not newly executed on this branch.
+
+Next integration order on JP: bring the agreed main snapshot forward → preserve JP's Supabase files and tests → attach a Python persistence adapter at `WalkRoom.publish` → retain FastAPI on port 8000 as the normal app gateway → recover sessions/deadlines → run the updated route/gateway tests and a multi-device demo. The Node relay remains a separately tested development harness on port 8787. The existing SQL RPC currently refuses non-replay location messages; extend that boundary only with scoped identity/consent.
+
+There will be overlapping edits in root README/ignores and the web package/README. Preserve both sets deliberately. Keep public fixture imports distinct from the city pipeline. Do not replace the new production gateway proxy with the demo relay proxy when resolving those changes.
+
+## Original baseline and the JP foundation
 
 | Area | On the reviewed main | JP foundation |
 | --- | --- | --- |
@@ -76,7 +96,7 @@ This is demo persistence, not a production safety service. SQL tests execute rea
 ### Gate 2 — identity, consent and authoritative gateway
 
 1. Add walker authentication, guardian opt-in, scoped expiring guardian links, and authenticated place-owner/control-room access.
-2. Move state transitions and deadlines out of `DemoEngine` into the gateway. Restore outstanding deadlines after restart.
+2. Reuse the now-merged FastAPI `LiveWalk` state transitions and timers; add persistent restoration instead of rebuilding those rules in a second backend.
 3. Authenticate each socket and authorize each command. A `role=guardian` URL is not authentication. Add incident IDs and route versions so stale replies/instructions cannot affect a newer incident or route.
 4. Add location fix time, received time, accuracy and tracking health. Missing fixes are not proof of a stop.
 5. Expire live subscriptions on walk end and provide retention/cleanup for live data. Render ended/incident outcomes separately from arrival. Only then enable actual GPS persistence.
@@ -97,7 +117,7 @@ An open shop is not automatically a verified haven or proof that its light works
 
 ### Gate 4 — voice and sponsor integrations
 
-Integrate one working path at a time: Cartesia speech → Claude reply → registered Scout/Watcher/Rescuer exchanges → Elastic tool retrieval → Apify hours. ASI:One invokes the same domain functions as PWA commands.
+Reuse the now-merged hours pipeline and agent modules. Integrate one working path at a time: Cartesia speech → Claude reply → registered Scout/Watcher/Rescuer exchanges → Elastic tool retrieval → verified cached/refreshable Apify hours. ASI:One invokes the same domain functions as PWA commands. Do not rerun paid hours ingestion without checking the remaining budget recorded in the team handoff.
 
 Show real provider calls and tool outputs in the trace. Keep simulated responses labeled. Measure speech-end to first audible output on the chosen phone and earbuds. Keep tap-to-talk and large response buttons available.
 
